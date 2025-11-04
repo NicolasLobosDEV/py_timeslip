@@ -1,0 +1,1315 @@
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+import fitz  # PyMuPDF
+from fpdf import FPDF
+from fpdf.enums import XPos, YPos
+import re
+import os
+import threading
+import time
+import queue
+import csv
+from datetime import datetime
+
+try:
+    import pytesseract
+    from PIL import Image
+except ImportError:
+    pytesseract = None
+    Image = None
+
+# ------------------ CONFIG ------------------
+DEBUG = 0  # 1 = only process first page of each PDF
+ASK_TIMETABLE_EVERY_RUN = True  # if True, asks once per unique subject set per run
+
+# If your tesseract isn't on PATH, set it here (Windows example):
+if pytesseract:
+    pytesseract.pytesseract.tesseract_cmd = r"C:\\Program Files\\Tesseract-OCR\\tesseract.exe"
+
+# ---------------- SUBJECT MAP (extend as needed) ----------------
+SUBJECT_CODE_MAP = {
+    "ENGAG": "English A",
+    "ENGBG": "English B",
+    "MATHG": "Mathematics",
+    "HISTG": "History",
+    "GEOGG": "Geography",
+    "BIOLG": "Biology",
+    "CHEMG": "Chemistry",
+    "PHYSAG": "Physics",
+    "ECONG": "Economics",
+    "PRINBG": "Principles of Business",
+    "PRINAG": "Principles of Accounts",
+    "SPANSG": "Spanish",
+    "FRNCHG": "French",
+    "ITG": "Information Technology",
+    "ADDMTG": "Additional Mathematics",
+    "OFFADG": "Office Administration",
+    "AGSBG": "Agricultural Science (Double Award)",
+    "AGSCG": "Agricultural Science (Single Award)",
+    "SOCSG": "Social Studies",
+    "INTSG": "Integrated Science",
+    "HUMANG": "Human & Social Biology",
+    "TDSCG": "Technical Drawing",
+    "MECHTG": "Mechanical Engineering Technology",
+    "FOODNG": "Food & Nutrition",
+    "HTMG": "Hospitality Management",
+    "ARTSG": "Visual Arts",
+    "MUSCG": "Music",
+    "DANCIG": "Dance",
+    "THEATG": "Theatre Arts",
+    "PHEDUG": "Physical Education",
+    "CARITEG": "Caribbean History",
+    # Additional mappings from original script
+    "SOCSTUDG": "Social Studies",
+    "OA": "Office Administration",
+    "POAG": "Principles of Accounts",
+    "HSBIOG": "Human and Social Biology",
+    "POBG": "Principles of Business",
+    "INTSCIG": "Integrated Science S/A",
+    "BIOG": "Biology",
+    "ADDMATH": "Additional Mathematics",
+    "CARHISTG": "Caribbean History",
+    "PHYSG": "Physics",
+    "GEOG": "Geography",
+    "SPANG": "Spanish",
+    "FRENG": "French",
+    "PORTG": "Portuguese",
+    "EDPMG": "Electronic Document Preparation & Management",
+    "RELIGEDG": "Religious Education",
+    "TECHDRG": "Technical Drawing",
+    "AGSCIDAG": "Agricultural Science D/A",
+    "AGSCISAG": "Agricultural Science S/A",
+    "INDTECHG": "Industrial Technology",
+    "FASHION": "Textiles, Clothing & Fashion",
+    "FOODNUTH": "Food, Nutrition & Health",
+    "FAMRESMG": "Family & Resource Management",
+    "MUSICG": "Music",
+    "PEASPORT": "Physical Education & Sport",
+    "THEARTSG": "Theatre Arts",
+    "VISARTSG": "Visual Arts",
+    "ACCU1": "Accounting Unit 1",
+    "ACCU2": "Accounting Unit 2",
+    "AMTU1": "Applied Mathematics Unit 1",
+    "AMTU2": "Applied Mathematics Unit 2",
+    "BIOU1": "Biology Unit 1",
+    "BIOU2": "Biology Unit 2",
+    "CARSTDU1": "Caribbean Studies",
+    "CHEMU1": "Chemistry Unit 1",
+    "CHEMU2": "Chemistry Unit 2",
+    "COMMSTU1": "Communication Studies",
+    "ECONU1": "Economics Unit 1",
+    "ECONU2": "Economics Unit 2",
+    "ENTRU1": "Entrepreneurship Unit 1",
+    "ENTRU2": "Entrepreneurship Unit 2",
+    "ENSCU1": "Environmental Science Unit 1",
+    "ENSCU2": "Environmental Science Unit 2",
+    "FRENU1": "French Unit 1",
+    "FRENU2": "French Unit 2",
+    "GEOU1": "Geography Unit 1",
+    "GEOU2": "Geography Unit 2",
+    "HISTU2": "History Unit 2",
+    "INMATU1": "Integrated Mathematics",
+    "INTHU1": "Information Technology Unit 1",
+    "INTHU2": "Information Technology Unit 2",
+    "LAWU1": "Law Unit 1",
+    "LAWU2": "Law Unit 2",
+    "LIEU1": "Literatures in English Unit 1",
+    "LIEU2": "Literatures in English Unit 2",
+    "MOBU1": "Management of Business Unit 1",
+    "MOBU2": "Management of Business Unit 2",
+    "PHYU1": "Physics Unit 1",
+    "PHYU2": "Physics Unit 2",
+    "PMATHU1": "Pure Mathematics Unit 1",
+    "PMATHU2": "Pure Mathematics Unit 2",
+    "SOCU1": "Sociology Unit 1",
+    "SOCU2": "Sociology Unit 2",
+    "SPU1": "Spanish Unit 1",
+    "SPU2": "Spanish Unit 2",
+    "TOURU1": "Tourism Unit 1",
+    "TOURU2": "Tourism Unit 2"
+}
+
+SUBJECT_CODE_PATTERN = re.compile(r"([A-Z]{3,8})(?:-([A-Z]))?")  # Capture code and type separately
+DATE_PATTERN = re.compile(r"\b(\d{2}/\d{2}/\d{4})\b")
+CANDIDATE_NUM_PATTERN = re.compile(r"\b(\d{10})\b")
+NAME_PATTERN = re.compile(r"^[A-Z'\- ]+,\s*[A-Z'\- ]+(?:\s+[A-Z'\- ]+)*$")
+
+
+# ---------------- CSV PARSER ----------------
+def parse_csv(csv_path, exam_type, log_callback):
+    eligible = []
+    try:
+        with open(csv_path, newline='', encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                service = row.get("Additional Application Service - sent via email", "").strip()
+                if service not in [
+                    "E-candidate slip/Timetable only- $30",
+                    "Error recognition & E-candidate slip/Timetable- $50"
+                ]:
+                    continue
+
+                if "Choose Examination" in row and row["Choose Examination"].strip():
+                    if row["Choose Examination"].strip().upper() != exam_type.upper():
+                        continue
+
+                last = (row.get("Last Name", "")).strip()
+                first = (row.get("First Name", "")).strip()
+                middle = (row.get("Middle Name", "")).strip()
+                name = normalize_name_csv(last, first, middle)
+
+                dob = normalize_dob(row.get("Date Of Birth", ""))
+                if not dob:
+                    log_callback(f"CSV row missing/invalid DOB for {name}; skipping")
+                    continue
+
+                eligible.append({"name": name, "dob": dob, "raw": row})
+        log_callback(f"CSV: {len(eligible)} candidate(s) eligible for e-slips after filtering.")
+        return eligible
+    except Exception as e:
+        log_callback(f"ERROR parsing CSV: {e}")
+        return []
+
+
+# ---------------- PDF TEXT HELPERS ----------------
+def extract_text_from_pdf(pdf_path, log, output_dir):
+    """
+    MODIFIED to always use image-based OCR first for higher accuracy on scanned documents.
+    """
+    doc = fitz.open(pdf_path)
+    all_text = []
+    page_count = len(doc)
+    pages_to_process = page_count if not DEBUG else 1
+
+    full_ocr_text = ""
+
+    for i, page in enumerate(doc):
+        if DEBUG and i >= pages_to_process:
+            break
+
+        log(f"Processing page {i + 1}/{pages_to_process}")
+
+        txt = ""
+        if pytesseract and Image:
+            log(f"Forcing high-DPI OCR on page {i + 1}...")
+            pix = page.get_pixmap(dpi=350)
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            config = '--psm 6'
+            txt = pytesseract.image_to_string(img, config=config)
+        else:
+            log("Tesseract/Pillow not found, falling back to simple text extraction.")
+            txt = page.get_text("text") or ""
+
+        cleaned_txt = clean_ocr_text(txt)
+        all_text.append(cleaned_txt)
+        full_ocr_text += f"--- PAGE {i + 1} ---\n{cleaned_txt}\n\n"
+
+    doc.close()
+
+    if output_dir and full_ocr_text.strip():
+        output_filepath = os.path.join(output_dir, f"ocr_output_{os.path.basename(pdf_path)}.txt")
+        try:
+            with open(output_filepath, "w", encoding="utf-8") as f:
+                f.write(full_ocr_text)
+            log(f"Saved OCR text to {os.path.basename(output_filepath)}")
+        except Exception as e:
+            log(f"Could not save OCR text: {e}")
+
+    joined = "\n".join(all_text)
+    log(f"Extracted text from {os.path.basename(pdf_path)} (pages processed: {pages_to_process}).")
+    return joined
+
+
+def clean_ocr_text(s):
+    """Enhanced OCR text cleaning with common corrections."""
+    s = s.replace("\u2010", "-").replace("\u2011", "-").replace("\u2013", "-")
+    s = s.replace('|', '').replace(']', '')
+
+    s = s.replace(' O ', ' 0 ').replace(' G ', ' 6 ').replace(' B ', ' 8 ')
+    s = s.replace(' l ', ' 1 ')
+
+    s = re.sub(r'\s+', ' ', s)
+    return s
+
+
+def normalize_name_csv(last, first, middle):
+    parts = []
+    last = last.strip().upper()
+    first = first.strip().upper()
+    middle = middle.strip().upper()
+    if last:
+        nm = last + ", " + first
+        if middle:
+            nm += " " + middle
+        parts.append(nm)
+    else:
+        nm = first
+        if middle:
+            nm += " " + middle
+        parts.append(nm)
+    return ", ".join(parts).title()
+
+
+def normalize_key_name(name_str):
+    """Normalizes a name string for reliable matching by removing spaces, commas and making it lowercase."""
+    if not isinstance(name_str, str):
+        return ""
+    return re.sub(r'[\s,]+', '', name_str).lower()
+
+
+def normalize_dob(val):
+    val = str(val).strip()
+    if not val:
+        return None
+
+    val = val.replace(".", "").strip()
+
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%m/%d/%Y"):
+        try:
+            dt = datetime.strptime(val, fmt)
+            return dt.strftime("%d/%m/%Y")
+        except ValueError:
+            continue
+
+    extended_formats = [
+        "%b %d, %Y", "%B %d, %Y", "%d %b %Y", "%d %B %Y",
+        "%b %d %Y", "%B %d %Y", "%d-%b-%Y", "%d-%B-%Y",
+        "%b-%d-%Y", "%B-%d-%Y", "%d %b, %Y", "%d %B, %Y",
+    ]
+
+    for fmt in extended_formats:
+        try:
+            dt = datetime.strptime(val, fmt)
+            return dt.strftime("%d/%m/%Y")
+        except ValueError:
+            continue
+    try:
+        words = val.split()
+        if len(words) >= 3:
+            words[0] = words[0].capitalize()
+            val_capitalized = " ".join(words)
+            for fmt in extended_formats:
+                try:
+                    dt = datetime.strptime(val_capitalized, fmt)
+                    return dt.strftime("%d/%m/%Y")
+                except ValueError:
+                    continue
+    except Exception:
+        pass
+
+    m = DATE_PATTERN.search(val)
+    return m.group(1) if m else None
+
+
+# ---------------- CENTRE LIST PARSER (REVISED) ----------------
+def parse_centre_list(pdf_path, log, output_dir):
+    centres = {}
+    log("--- STARTING CENTRE LIST PARSING (IMPROVED LOGIC) ---")
+    try:
+        text = extract_text_from_pdf(pdf_path, log, output_dir)
+
+        # This new logic is more robust for messy OCR that merges lines.
+        # 1. Find all 6-digit codes in the text to use as anchors.
+        # 2. The name of a centre is the text between its code and the next code.
+        # 3. Clean the extracted text to remove area names and other junk.
+
+        code_pattern = re.compile(r"\b(\d{6})\b")
+        matches = list(code_pattern.finditer(text))
+
+        if not matches:
+            log("Warning: No 6-digit centre codes found in the centre list PDF.")
+            return {}
+
+        for i, current_match in enumerate(matches):
+            code = current_match.group(1)
+
+            # Define the slice of text that contains the name
+            start_pos = current_match.end()
+            end_pos = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+
+            name_raw = text[start_pos:end_pos]
+
+            # Clean the raw name string
+            name_cleaned = re.sub(r'\d', '', name_raw)  # Remove stray digits
+            name_cleaned = name_cleaned.replace("E-Testing", "").strip()
+            name_cleaned = name_cleaned.replace("Schoo!", "School").strip()  # Fix common OCR error
+
+            # Intelligently find the end of the school name before the area name starts
+            common_endings = ["Secondary School", "Secondary", "College", "Campus", "High School", "School"]
+
+            best_name = name_cleaned
+            # We iterate through possible name endings and take the longest, most complete name we can find.
+            for ending in common_endings:
+                if ending in name_cleaned:
+                    end_index = name_cleaned.find(ending) + len(ending)
+                    potential_name = name_cleaned[:end_index].strip()
+                    best_name = potential_name
+                    break  # Found a good candidate, stop here.
+
+            # Final cleanup
+            best_name = re.sub(r'\s+', ' ', best_name).strip()
+
+            if code and best_name:
+                log(f"  Parsed Centre: {code} -> '{best_name}'")
+                centres[code] = best_name
+
+        if not centres:
+            log("Warning: No centres parsed from centre list PDF with improved logic.")
+        else:
+            log(f"Centres parsed (improved logic): {len(centres)}")
+        return centres
+
+    except Exception as e:
+        log(f"ERROR parsing centre list: {e}")
+        return {}
+
+
+# ---------------- CANDIDATE LIST PARSER (REVISED) ----------------
+def parse_candidate_list(pdf_path, log, output_dir):
+    """
+    REWRITTEN parser to handle the specific column order:
+    CANDIDATE# | NAME | DOB | GENDER | SUBJECTS
+    And to filter out footer junk text.
+    MODIFIED to also return the full extracted text.
+    """
+    candidates = []
+    log("--- STARTING CANDIDATE LIST PARSING (Smarter Logic V3) ---")
+
+    try:
+        text = extract_text_from_pdf(pdf_path, log, output_dir)
+
+        matches = list(re.finditer(CANDIDATE_NUM_PATTERN, text))
+
+        if not matches:
+            raise ValueError("OCR did not find any 10-digit candidate numbers in the PDF text.")
+
+        for i, current_match in enumerate(matches):
+            start_pos = current_match.start()
+            end_pos = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+
+            block = text[start_pos:end_pos]
+            cleaned_block = re.sub(r'\s+', ' ', block).strip()
+
+            id_match = CANDIDATE_NUM_PATTERN.search(cleaned_block)
+            dob_match = DATE_PATTERN.search(cleaned_block)
+
+            if not (id_match and dob_match):
+                log(f"SKIPPING malformed block: {cleaned_block[:100]}...")
+                continue
+
+            candidate_num_full = id_match.group(1)
+            dob = dob_match.group(1)
+
+            name_raw = cleaned_block[id_match.end():dob_match.start()].strip()
+            name_parts = [part.strip() for part in name_raw.split(',') if part.strip()]
+            if name_parts:
+                last_name = name_parts[0]
+                first_middle = ' '.join(name_parts[1:])
+                name = f"{last_name}, {first_middle}".title()
+            else:
+                name = name_raw.title()
+
+            if not name or not re.search(r'[a-zA-Z]', name):
+                log(f"SKIPPING block for Cand# {candidate_num_full}: Invalid name parsed ('{name_raw}').")
+                continue
+
+            remaining_text = cleaned_block[dob_match.end():].strip()
+
+            gender_match = re.search(r'\b([MF])\b', remaining_text)
+            if not gender_match:
+                log(f"SKIPPING block for Cand# {candidate_num_full}: Could not find Gender after DOB.")
+                continue
+
+            gender = "Male" if gender_match.group(1) == "M" else "Female"
+
+            subjects_raw = remaining_text[gender_match.end():].strip()
+
+            count_match = re.search(r'\s(\d)$', subjects_raw)
+            if count_match:
+                subjects_raw = subjects_raw[:count_match.start()].strip()
+
+            subjects_list = []
+            for code_match in SUBJECT_CODE_PATTERN.finditer(subjects_raw.upper()):
+                code, type = code_match.groups()
+                # MODIFICATION: Only add subject if the code is a valid key in our map
+                if code in SUBJECT_CODE_MAP:
+                    subjects_list.append({"code": code, "type": type or 'N/A'})
+
+            candidates.append({
+                "id": candidate_num_full, "centre_num": candidate_num_full[:6], "seq_num": candidate_num_full[6:],
+                "name": name, "dob": dob, "gender": gender, "subjects": subjects_list
+            })
+
+        log(f"Found {len(candidates)} candidates successfully parsed.")
+
+        if not candidates:
+            raise ValueError("OCR parsing failed to extract any valid candidate data.")
+
+        return candidates, [], text
+
+    except Exception as e:
+        log(f"ERROR parsing candidate list: {e}")
+        return [], [], ""
+
+
+# ---------------- MANUAL WINDOWS ----------------
+# Helper class for scrollable frames
+class ScrollableFrame(ttk.Frame):
+    def __init__(self, container, *args, **kwargs):
+        super().__init__(container, *args, **kwargs)
+        canvas = tk.Canvas(self)
+        scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        self.scrollable_frame = ttk.Frame(canvas)
+
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(
+                scrollregion=canvas.bbox("all")
+            )
+        )
+
+        canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+
+class BaseManualEntry(tk.Toplevel):
+    def __init__(self, parent, title, instructions):
+        super().__init__(parent)
+        self.title(title)
+        self.geometry("950x600")  # Increased size for tables and new button
+        self.transient(parent)
+        self.grab_set()
+        self.entries = []
+
+        self.main_frame = ttk.Frame(self, padding=10)
+        self.main_frame.pack(fill="both", expand=True)
+
+        self.instructions_label = ttk.Label(self.main_frame, text=instructions, wraplength=930)
+        self.instructions_label.pack(pady=(0, 8), fill='x')
+
+        btns = ttk.Frame(self)
+        btns.pack(pady=8)
+        ttk.Button(btns, text="Submit", command=self.submit).pack(side="left", padx=6)
+        ttk.Button(btns, text="Cancel", command=self.destroy).pack(side="left")
+
+    def submit(self):
+        raise NotImplementedError
+
+    def show(self):
+        self.deiconify()
+        self.wait_window()
+        return self.entries
+
+
+class ManualCandidateEntry(BaseManualEntry):
+    def __init__(self, parent, missed_blocks, pdf_text):
+        super().__init__(parent, "Manual Candidate Entry",
+                         "Review any automatically extracted but unparsable lines below. Add or correct candidate information in the table. Use the 'Find All Details' button to search the PDF and auto-fill details for all rows with a valid Candidate ID.")
+
+        self.pdf_text = pdf_text  # NEW: Store full PDF text for searching
+        self.rows = []
+
+        if missed_blocks:
+            ref_frame = ttk.LabelFrame(self.main_frame, text="Unparsable Lines (for reference)", padding=5)
+            ref_frame.pack(fill='x', padx=10, pady=(0, 5))
+            ref_text = tk.Text(ref_frame, height=4, font=("Courier New", 9))
+            ref_text.pack(fill='x', expand=True)
+            ref_text.insert("1.0", "\n---\n".join(missed_blocks))
+            ref_text.config(state="disabled")
+
+        self.scrollable_frame = ScrollableFrame(self.main_frame)
+        self.scrollable_frame.pack(fill="both", expand=True, padx=10)
+        self.container = self.scrollable_frame.scrollable_frame
+
+        self.headers = ["Candidate ID", "Full Name (Surname, First)", "DOB (dd/mm/yyyy)", "Gender (M/F)",
+                        "Subjects (e.g., MATHG-A POBG-R)"]  # MODIFIED: Removed Actions column
+        for i, header in enumerate(self.headers):
+            ttk.Label(self.container, text=header, font=("Helvetica", 10, "bold")).grid(row=0, column=i, padx=5, pady=5,
+                                                                                        sticky='w')
+
+        # NEW: Bottom button frame
+        bottom_btn_frame = ttk.Frame(self)
+        bottom_btn_frame.pack(pady=5, padx=10, fill='x')
+
+        find_all_btn = ttk.Button(bottom_btn_frame, text="Find All Details", command=self._find_all_details)
+        find_all_btn.pack(side=tk.LEFT)
+
+        add_btn = ttk.Button(bottom_btn_frame, text="Add New Candidate Row", command=self._add_row)
+        add_btn.pack(side=tk.RIGHT)
+
+        self._add_row()  # Start with one empty row
+
+    def _add_row(self, data=None):
+        data = data or {}
+        row_num = len(self.rows) + 1
+
+        row_vars = {
+            "id": tk.StringVar(value=data.get("id", "")),
+            "name": tk.StringVar(value=data.get("name", "")),
+            "dob": tk.StringVar(value=data.get("dob", "")),
+            "gender": tk.StringVar(value=data.get("gender", "")),
+            "subjects": tk.StringVar(value=data.get("subjects", ""))
+        }
+
+        ttk.Entry(self.container, textvariable=row_vars["id"], width=15).grid(row=row_num, column=0, padx=5, pady=2,
+                                                                              sticky='w')
+        ttk.Entry(self.container, textvariable=row_vars["name"], width=30).grid(row=row_num, column=1, padx=5, pady=2,
+                                                                                sticky='w')
+        ttk.Entry(self.container, textvariable=row_vars["dob"], width=15).grid(row=row_num, column=2, padx=5, pady=2,
+                                                                               sticky='w')
+        ttk.Entry(self.container, textvariable=row_vars["gender"], width=5).grid(row=row_num, column=3, padx=5, pady=2,
+                                                                                 sticky='w')
+        ttk.Entry(self.container, textvariable=row_vars["subjects"], width=40).grid(row=row_num, column=4, padx=5,
+                                                                                    pady=2, sticky='w')
+
+        self.rows.append(row_vars)
+
+    # NEW: Method to find details for all candidates in the table
+    def _find_all_details(self):
+        found_count = 0
+        not_found_ids = []
+
+        for row_vars in self.rows:
+            candidate_id = row_vars["id"].get().strip()
+            if not re.match(r'^\d{10}$', candidate_id):
+                continue  # Skip rows without a valid ID
+
+            matches = list(re.finditer(CANDIDATE_NUM_PATTERN, self.pdf_text))
+            found_block = None
+
+            for i, current_match in enumerate(matches):
+                if current_match.group(1) == candidate_id:
+                    start_pos = current_match.start()
+                    end_pos = matches[i + 1].start() if i + 1 < len(matches) else len(self.pdf_text)
+                    found_block = self.pdf_text[start_pos:end_pos]
+                    break
+
+            if not found_block:
+                not_found_ids.append(candidate_id)
+                continue
+
+            cleaned_block = re.sub(r'\s+', ' ', found_block).strip()
+            gender_match = re.search(r'\b([MF])\b', cleaned_block)
+
+            if not gender_match:
+                not_found_ids.append(candidate_id)
+                continue
+
+            gender = gender_match.group(1)
+            subjects_raw = cleaned_block[gender_match.end():].strip()
+            count_match = re.search(r'\s(\d)$', subjects_raw)
+            if count_match:
+                subjects_raw = subjects_raw[:count_match.start()].strip()
+
+            subjects_list = []
+            for code_match in SUBJECT_CODE_PATTERN.finditer(subjects_raw.upper()):
+                code, type = code_match.groups()
+                if code in SUBJECT_CODE_MAP:
+                    subject_str = code
+                    if type:
+                        subject_str += f"-{type}"
+                    subjects_list.append(subject_str)
+
+            subjects_final_str = " ".join(subjects_list)
+
+            if not subjects_final_str:
+                not_found_ids.append(candidate_id)
+                continue
+
+            row_vars["gender"].set(gender)
+            row_vars["subjects"].set(subjects_final_str)
+            found_count += 1
+
+        summary_message = f"Found and populated details for {found_count} candidate(s).\n\n"
+        if not_found_ids:
+            summary_message += f"Could not find or fully parse details for the following IDs:\n" + "\n".join(
+                not_found_ids)
+
+        messagebox.showinfo("Find Complete", summary_message, parent=self)
+
+    def submit(self):
+        out = []
+        has_blank_id_with_data = False
+
+        for row_vars in self.rows:
+            id_val = row_vars["id"].get().strip()
+            name_val = row_vars["name"].get().strip()
+            dob_val = row_vars["dob"].get().strip()
+            if not id_val and (name_val or dob_val):
+                has_blank_id_with_data = True
+                break
+
+        if has_blank_id_with_data:
+            proceed = messagebox.askyesno(
+                "Blank Candidate ID",
+                "One or more rows have a blank Candidate ID but contain other data. These incomplete rows will be ignored.\n\nDo you wish to continue?"
+            )
+            if not proceed:
+                return
+
+        for row_vars in self.rows:
+            id_val = row_vars["id"].get().strip()
+            name_val = row_vars["name"].get().strip()
+            dob_val = row_vars["dob"].get().strip()
+            gender_val = row_vars["gender"].get().strip().upper()
+            subjects_str = row_vars["subjects"].get().strip().upper()
+
+            if not id_val:
+                continue
+
+            if not re.match(r'^\d{10}$', id_val):
+                messagebox.showerror("Validation Error", f"Invalid Candidate ID: '{id_val}'. Must be 10 digits.")
+                return
+
+            normalized_dob = normalize_dob(dob_val)
+            if not normalized_dob:
+                messagebox.showerror("Validation Error", f"Invalid DOB: '{dob_val}'. Use dd/mm/yyyy format.")
+                return
+
+            if gender_val and gender_val not in ["M", "F"]:
+                messagebox.showerror("Validation Error", f"Invalid Gender: '{gender_val}'. Use M or F.")
+                return
+
+            gender_full = "Male" if gender_val == "M" else "Female" if gender_val == "F" else "N/A"
+
+            subjects_list = []
+            for s in subjects_str.split():
+                match = SUBJECT_CODE_PATTERN.match(s)
+                if match:
+                    code, type = match.groups()
+                    subjects_list.append({"code": code, "type": type or 'N/A'})
+
+            out.append({
+                "id": id_val, "centre_num": id_val[:6], "seq_num": id_val[6:],
+                "name": name_val, "dob": normalized_dob, "gender": gender_full,
+                "subjects": subjects_list
+            })
+
+        self.entries = out
+        self.destroy()
+
+
+class ManualCSVEntry(ManualCandidateEntry):
+    def __init__(self, parent, unmatched_csv, pdf_text):
+        # MODIFIED: Pass pdf_text to the parent class
+        super().__init__(parent, [], pdf_text)
+        self.title("Manual CSV Candidate Entry")
+        self.instructions_label.config(
+            text="The following candidates from your CSV were not found in the PDF. Please enter their 10-digit Candidate ID, use the 'Find All Details' button to auto-populate subjects, then click Submit.")
+
+        for widget in self.container.winfo_children():
+            if int(widget.grid_info()["row"]) > 0:
+                widget.destroy()
+        self.rows = []
+
+        for i, header in enumerate(self.headers):
+            ttk.Label(self.container, text=header, font=("Helvetica", 10, "bold")).grid(row=0, column=i, padx=5, pady=5,
+                                                                                        sticky='w')
+
+        for c in unmatched_csv:
+            data = {"id": "??????????", "name": c['name'], "dob": c['dob']}
+            self._add_row(data)
+
+
+class ManualCentreEntry(BaseManualEntry):
+    def __init__(self, parent, missing_centre_codes):
+        super().__init__(parent, "Manual Centre Entry",
+                         "Enter the name for each missing centre code. Rows with empty codes or names will be ignored.")
+        self.centre_entries = {}
+
+        scrollable_frame = ScrollableFrame(self.main_frame)
+        scrollable_frame.pack(fill="both", expand=True, padx=10)
+        container = scrollable_frame.scrollable_frame
+
+        ttk.Label(container, text="Centre Code", font=("Helvetica", 10, "bold")).grid(row=0, column=0, padx=5, pady=5,
+                                                                                      sticky='w')
+        ttk.Label(container, text="Centre Name", font=("Helvetica", 10, "bold")).grid(row=0, column=1, padx=5, pady=5,
+                                                                                      sticky='w')
+
+        for i, code in enumerate(missing_centre_codes, 1):
+            ttk.Label(container, text=code).grid(row=i, column=0, padx=5, pady=2, sticky='w')
+            name_var = tk.StringVar()
+            name_entry = ttk.Entry(container, textvariable=name_var, width=50)
+            name_entry.grid(row=i, column=1, padx=5, pady=2, sticky='w')
+            self.centre_entries[code] = name_var
+
+    def submit(self):
+        centres = {}
+        for code, name_var in self.centre_entries.items():
+            name = name_var.get().strip()
+            if code and name:
+                centres[code] = name
+        self.entries = centres
+        self.destroy()
+
+
+class ManualTimetableEntry(BaseManualEntry):
+    def __init__(self, parent, unique_subjects, exam_month, exam_year):
+        super().__init__(parent, "Manual Timetable Entry",
+                         "Enter timetable information for each paper of a subject. Use the 'Add Paper' button if a subject has more than three papers.")
+        self.subject_rows = {}
+
+        scrollable_frame = ScrollableFrame(self.main_frame)
+        scrollable_frame.pack(fill="both", expand=True, padx=10)
+        container = scrollable_frame.scrollable_frame
+
+        self.period_options = ["AM", "PM", "Oral Examination"]
+
+        for s_code in sorted(unique_subjects):
+            s_name = SUBJECT_CODE_MAP.get(s_code, s_code)
+
+            subject_frame = ttk.LabelFrame(container, text=f"{s_code} - {s_name}", padding=10)
+            subject_frame.pack(fill="x", pady=5, padx=5)
+
+            headers = ["Paper", "Date", "Period"]
+            for i, header in enumerate(headers):
+                ttk.Label(subject_frame, text=header, font=("Helvetica", 10, "bold")).grid(row=0, column=i, padx=5,
+                                                                                           pady=5)
+
+            self.subject_rows[s_code] = []
+
+            default_papers = ["1", "2", "3/2"]
+            for paper_placeholder in default_papers:
+                self._add_paper_row(s_code, subject_frame, paper_placeholder)
+
+            add_button = ttk.Button(subject_frame, text=f"Add Paper for {s_code}",
+                                    command=lambda code=s_code, frame=subject_frame: self._add_paper_row(code, frame))
+            add_button.grid(row=len(self.subject_rows[s_code]) + 1, column=0, columnspan=3, pady=5)
+
+    def _add_paper_row(self, subject_code, container, paper_num=None):
+        row_index = len(self.subject_rows[subject_code]) + 1
+
+        paper_var = tk.StringVar(value=str(paper_num) if paper_num else str(row_index))
+        date_var = tk.StringVar()
+        period_var = tk.StringVar(value="AM")
+
+        ttk.Entry(container, textvariable=paper_var, width=10).grid(row=row_index, column=0, padx=5, pady=2)
+        ttk.Entry(container, textvariable=date_var, width=20).grid(row=row_index, column=1, padx=5, pady=2)
+        ttk.Combobox(container, textvariable=period_var, values=self.period_options, width=20, state="readonly").grid(
+            row=row_index, column=2, padx=5, pady=2)
+
+        self.subject_rows[subject_code].append((paper_var, date_var, period_var))
+
+    def submit(self):
+        timetable = {}
+        for subject_code, rows in self.subject_rows.items():
+            timetable[subject_code] = []
+            for paper_var, date_var, period_var in rows:
+                date = date_var.get().strip()
+                if date:  # Only add rows that have a date
+                    timetable[subject_code].append({
+                        "paper": paper_var.get().strip(),
+                        "date": date,
+                        "session": period_var.get().strip()
+                    })
+        self.entries = timetable
+        self.destroy()
+
+
+# --- PDF GENERATION CLASS ---
+class PDF(FPDF):
+    def __init__(self, background_path="background.png"):
+        super().__init__()
+        self.background_path = background_path
+
+    def add_page(self, orientation='', format='', same=False):
+        super().add_page(orientation, format, same)
+        if self.background_path and os.path.exists(self.background_path):
+            self.image(self.background_path, x=0, y=0, w=self.w, h=self.h)
+        else:
+            try:
+                self.set_font('Roboto', 'I', 8)
+                self.cell(0, 5, "background.png not found", 0, align='C')
+            except RuntimeError:
+                self.set_font('Helvetica', 'I', 8)
+                self.cell(0, 5, "background.png not found", 0, align='C')
+
+    def header(self):
+        try:
+            self.set_font('Roboto', 'B', 14)
+        except RuntimeError:
+            self.set_font('Helvetica', 'B', 14)
+        self.set_y(50)
+        self.cell(0, 10, 'CXC Examination E-Slip', 0, new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C')
+        self.ln(5)
+
+    def footer(self):
+        self.set_y(-15)
+
+def create_pdf_slip(candidate, centre_name, timetable, output_dir, exam_month, exam_year, exam_type):
+    try:
+        name_parts = candidate['name'].split(',', 1)
+        surname = name_parts[0].strip() if name_parts else "Unknown"
+        other_names = name_parts[1].strip() if len(name_parts) > 1 else ""
+
+        sanitized_surname = re.sub(r'[\\/*?:"<>|]', "", surname)
+        sanitized_other_names = re.sub(r'[\\/*?:"<>|]', "", other_names)
+
+        filename = f"{exam_type} E-Slip {sanitized_surname} {sanitized_other_names}.pdf"
+        filepath = os.path.join(output_dir, filename)
+
+        counter = 1
+        base_filepath = filepath
+        while os.path.exists(filepath):
+            name, ext = os.path.splitext(base_filepath)
+            filepath = f"{name} ({counter}){ext}"
+            counter += 1
+
+        pdf = PDF()
+
+        try:
+            pdf.add_font('Roboto', '', 'Roboto-Regular.ttf')
+            pdf.add_font('Roboto', 'B', 'Roboto-Bold.ttf')
+            pdf.add_font('Roboto', 'I', 'Roboto-Italic.ttf')
+        except Exception as e:
+            if "FPDFException" in str(e) and "TTF file" in str(e):
+                messagebox.showerror("Font File Missing",
+                                     "Required Roboto font files (.ttf) not found. Please place Roboto-Regular.ttf, Roboto-Bold.ttf, and Roboto-Italic.ttf in the same directory as the script.")
+                return False
+
+        pdf.add_page()
+        pdf.set_right_margin(15)
+        pdf.set_left_margin(15)
+        pdf.set_auto_page_break(True,30)
+
+        pdf.set_font('Roboto', '', 11)
+        greeting_text = (
+            "Greetings\n"
+            f"Thank you for using the Exam Concierge Service for the {exam_month} {exam_year} CXC examinations.\n"
+            "The information requested is as follows:"
+        )
+        pdf.multi_cell(0, 5, greeting_text)
+        pdf.ln(5)
+
+        pdf.set_font('Roboto', 'B', 12)
+        pdf.cell(0, 10, 'Candidate Credentials', 0, new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='L')
+        pdf.set_font('Roboto', '', 10)
+        label_col_width = 55
+        value_col_width = 125
+
+        credentials = {
+            "Candidate Surname": surname, "Candidate First/Other Names": other_names,
+            "Candidate DOB": candidate['dob'], "Candidate Gender": candidate['gender'],
+            "Candidate Number": candidate['id'], "Centre Number": candidate['centre_num'],
+            "Centre Location": centre_name or 'N/A'
+        }
+        pdf.set_fill_color(220, 220, 220)
+        for label, value in credentials.items():
+            pdf.set_font('Roboto', 'B', 10)
+            pdf.cell(label_col_width, 8, label, border=1, fill=True)
+            pdf.set_font('Roboto', '', 10)
+            pdf.cell(value_col_width, 8, f" {value}", border=1, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.ln(5)
+
+        examination_details = f"{exam_type} {exam_month} {exam_year}"
+        pdf.set_font('Roboto', 'B', 10)
+        pdf.cell(label_col_width, 8, "Examination", border=1, fill=True)
+        pdf.set_font('Roboto', '', 10)
+        pdf.cell(0, 8, f" {examination_details}", border=1, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+        pdf.ln(2)
+
+        pdf.set_font('Roboto', 'B', 10)
+        pdf.set_fill_color(220, 220, 220)
+        pdf.cell(0, 8, "Examination Timetable", border=1, new_x=XPos.LMARGIN, new_y=YPos.NEXT, align='C', fill=True)
+
+        pdf.set_font('Roboto', 'B', 10)
+        headers = ["Subject", "Candidate Type", "Paper", "Date", "Session"]
+        total_width = pdf.w - pdf.l_margin - pdf.r_margin
+        col_widths = [total_width * 0.35, total_width * 0.15, total_width * 0.15, total_width * 0.20,
+                      total_width * 0.15]
+
+        for i, header in enumerate(headers):
+            pdf.cell(col_widths[i], 8, header, border=1, align='C', fill=True)
+        pdf.ln()
+
+        pdf.set_font('Roboto', '', 9)
+        if not candidate.get('subjects'):
+            pdf.cell(sum(col_widths), 10, "No subjects found for this candidate.", 1, new_x=XPos.LMARGIN,
+                     new_y=YPos.NEXT, align='C')
+        else:
+            for subject in candidate['subjects']:
+                code = subject['code']
+                cand_type = subject['type']
+                subject_name = SUBJECT_CODE_MAP.get(code, code)
+                papers_info = timetable.get(code, [])
+
+                papers_to_show = papers_info
+                if cand_type == 'R':
+                    papers_to_show = [p for p in papers_info if p.get('paper') in ['1', '2']]
+
+                for paper_info in papers_to_show:
+                    pdf.cell(col_widths[0], 8, f" {subject_name}", 1)
+                    pdf.cell(col_widths[1], 8, cand_type, 1, align='C')
+                    pdf.cell(col_widths[2], 8, paper_info.get('paper', ''), 1, align='C')
+                    pdf.cell(col_widths[3], 8, paper_info.get('date', ''), 1, align='C')
+                    pdf.cell(col_widths[4], 8, paper_info.get('session', ''), 1, new_x=XPos.LMARGIN, new_y=YPos.NEXT,
+                             align='C')
+
+        bottom_text = (
+            "Starting times for all centers within a territory are 09:00 hr. for the morning (9AM) session and 13:00 hr. for the afternoon (1PM) session. The Local Registrar reserves the right to arrange candidates for the administering of examinations."
+        )
+        pdf.ln(5)
+        pdf.set_font('Roboto', 'I', 9)
+        pdf.multi_cell(0, 5, bottom_text, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+
+        pdf.output(filepath)
+        return filepath
+
+    except Exception as e:
+        print(f"Failed to create PDF for {candidate.get('name', 'Unknown')}: {e}")
+        return False
+
+
+# ---------------- APP ----------------
+class ESlipGeneratorApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("CXC E-Slip Generator")
+        self.root.geometry("800x700")
+
+        self.log_queue = queue.Queue()
+        self.file_paths = {"candidates": "", "centres": "", "csv": ""}
+        self.output_dir = ""
+        self.exam_type = tk.StringVar(value="CSEC")
+        self.exam_month = tk.StringVar(value="June")
+        self.exam_year = tk.StringVar(value=str(datetime.now().year))
+        self._start_time = None
+
+        wrap = ttk.Frame(root, padding=12)
+        wrap.pack(fill="both", expand=True)
+
+        exam_fr = ttk.LabelFrame(wrap, text="1. Exam Settings", padding=10)
+        exam_fr.pack(fill="x")
+        ttk.Label(exam_fr, text="Exam Type:").grid(row=0, column=0, sticky="w")
+        ttk.OptionMenu(exam_fr, self.exam_type, self.exam_type.get(), "CSEC", "CAPE").grid(row=0, column=1, sticky="w")
+        ttk.Label(exam_fr, text="Month:").grid(row=0, column=2, sticky="e")
+        ttk.Entry(exam_fr, textvariable=self.exam_month, width=10).grid(row=0, column=3, sticky="w")
+        ttk.Label(exam_fr, text="Year:").grid(row=0, column=4, sticky="e")
+        ttk.Entry(exam_fr, textvariable=self.exam_year, width=8).grid(row=0, column=5, sticky="w")
+        exam_fr.grid_columnconfigure(6, weight=1)
+
+        files_fr = ttk.LabelFrame(wrap, text="2. Select Source Files", padding=10)
+        files_fr.pack(fill="x", pady=(10, 0))
+        self._add_file_row(files_fr, 0, "Candidate List (PDF):", "candidates", [("PDF files", "*.pdf")])
+        self._add_file_row(files_fr, 1, "Centre List (PDF):", "centres", [("PDF files", "*.pdf")])
+        self._add_file_row(files_fr, 2, "Eligibility CSV:", "csv", [("CSV files", "*.csv")])
+
+        out_fr = ttk.LabelFrame(wrap, text="3. Output", padding=10)
+        out_fr.pack(fill="x", pady=(10, 0))
+        self.out_lbl = ttk.Label(out_fr, text="No folder selected", relief="sunken")
+        self.out_lbl.grid(row=0, column=0, sticky="ew")
+        ttk.Button(out_fr, text="Choose Folder", command=self.select_output_dir).grid(row=0, column=1, padx=6)
+        out_fr.grid_columnconfigure(0, weight=1)
+
+        act = ttk.Frame(wrap)
+        act.pack(fill="x", pady=(10, 0))
+        self.btn_start = ttk.Button(act, text="Generate E-Slips", command=self.start)
+        self.btn_start.pack(side="left")
+
+        self.progress_bar = ttk.Progressbar(act, orient="horizontal", mode="determinate")
+        self.progress_bar.pack(side="right", fill="x", expand=True, padx=(10, 0))
+
+        self.status_label = ttk.Label(wrap, text="Status: Ready")
+        self.status_label.pack(fill="x", pady=(5, 0))
+
+        log_fr = ttk.LabelFrame(wrap, text="Log", padding=10)
+        log_fr.pack(fill="both", expand=True, pady=(10, 0))
+
+        log_container = ttk.Frame(log_fr)
+        log_container.pack(fill="both", expand=True)
+
+        self.log_txt = tk.Text(log_container, height=16, font=("Consolas", 10))
+        scrollbar = ttk.Scrollbar(log_container, orient="vertical", command=self.log_txt.yview)
+        self.log_txt.configure(yscrollcommand=scrollbar.set)
+
+        self.log_txt.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        self.root.after(100, self._drain_log)
+        self.timetable_cache = {}
+
+    def _add_file_row(self, parent, row, label, key, ftypes):
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w")
+        lbl = ttk.Label(parent, text="No file selected", relief="sunken")
+        lbl.grid(row=row, column=1, sticky="ew", padx=6)
+        ttk.Button(parent, text="Browse", command=lambda k=key, l=lbl, ft=ftypes: self._pick_file(k, l, ft)).grid(
+            row=row, column=2)
+        parent.grid_columnconfigure(1, weight=1)
+
+    def _pick_file(self, key, label_widget, ftypes):
+        p = filedialog.askopenfilename(filetypes=ftypes)
+        if p:
+            self.file_paths[key] = p
+            label_widget.config(text=os.path.basename(p))
+
+    def select_output_dir(self):
+        p = filedialog.askdirectory()
+        if p:
+            self.output_dir = p
+            self.out_lbl.config(text=p)
+
+    def log(self, msg):
+        self.log_queue.put(msg)
+
+    def _drain_log(self):
+        while not self.log_queue.empty():
+            try:
+                msg = self.log_queue.get_nowait()
+                self.log_txt.insert("end", msg + "\n")
+                self.log_txt.see("end")
+            except queue.Empty:
+                break
+        self.root.after(120, self._drain_log)
+
+    def start(self):
+        if not all(self.file_paths.values()) or not self.output_dir:
+            messagebox.showerror("Missing Files/Folder", "Please select all source files and an output folder.")
+            return
+        if not self.exam_month.get().strip() or not self.exam_year.get().strip():
+            messagebox.showerror("Missing Exam Details", "Please enter exam month and year.")
+            return
+
+        self._start_time = time.time()
+        self.btn_start.config(state=tk.DISABLED)
+        self.status_label.config(text="Status: Starting...")
+        self.log_txt.delete("1.0", tk.END)
+
+        t = threading.Thread(target=self._run)
+        t.daemon = True
+        t.start()
+
+    def _run(self):
+        try:
+            exam_type = self.exam_type.get().strip()
+            exam_month = self.exam_month.get().strip()
+            exam_year = self.exam_year.get().strip()
+
+            self.log("Status: Parsing CSV for eligible candidates...")
+            csv_list = parse_csv(self.file_paths["csv"], exam_type, self.log)
+            if not csv_list:
+                self.log("No eligible candidates found in CSV. Stopping.")
+                return
+
+            self.log("Status: Parsing Centre List...")
+            centres = parse_centre_list(self.file_paths["centres"], self.log, self.output_dir)
+            if not centres:
+                self.log("No centres found. Stopping.")
+                return
+
+            self.log("Status: Parsing Candidate List...")
+            # MODIFIED: Capture the full PDF text
+            cand_list, unmatched_blocks, pdf_text = parse_candidate_list(self.file_paths["candidates"], self.log,
+                                                                         self.output_dir)
+
+            if unmatched_blocks:
+                self.log(f"Opening manual candidate entry for {len(unmatched_blocks)} unmatched block(s)...")
+                # MODIFIED: Pass pdf_text to the handler
+                self.root.after(0, lambda: self._show_manual_candidate_entry(unmatched_blocks, cand_list, csv_list,
+                                                                             centres, exam_month, exam_year, exam_type,
+                                                                             pdf_text))
+                return
+            else:
+                # MODIFIED: Pass pdf_text to continue processing
+                self._continue_processing(cand_list, csv_list, centres, exam_month, exam_year, exam_type, pdf_text)
+
+        except Exception as e:
+            self.log(f"ERROR: {e}")
+            messagebox.showerror("Error", str(e))
+        finally:
+            self.root.after(0, self._reset_ui)
+
+    def _show_manual_candidate_entry(self, unmatched_blocks, cand_list, csv_list, centres, exam_month, exam_year,
+                                     exam_type, pdf_text):
+        # MODIFIED: Pass pdf_text to the dialog
+        dlg = ManualCandidateEntry(self.root, unmatched_blocks, pdf_text)
+        extra = dlg.show()
+        if extra:
+            self.log(f"Added {len(extra)} candidates from manual entry")
+            cand_list.extend(extra)
+
+        t = threading.Thread(
+            target=lambda: self._continue_processing(cand_list, csv_list, centres, exam_month, exam_year, exam_type,
+                                                     pdf_text))
+        t.daemon = True
+        t.start()
+
+    def _continue_processing(self, cand_list, csv_list, centres, exam_month, exam_year, exam_type, pdf_text):
+        try:
+            self.log("Status: Cross-matching candidates with CSV...")
+            matched = []
+            missing_csv = []
+
+            def make_key(c):
+                name_key = normalize_key_name(c.get('name', ''))
+                return (name_key, c.get('dob', ''))
+
+            self.log("\n--- DEBUG: Building searchable index from PDF data... ---")
+            cand_index = {}
+            for c in cand_list:
+                key = make_key(c)
+                if key[0]:
+                    cand_index[key] = c
+                    self.log(f"  -> Indexing PDF Key: {key} -> Value: {c['name']}")
+
+            self.log(f"\n--- DEBUG: Built PDF index with {len(cand_index)} unique candidate keys. ---")
+            self.log("--- DEBUG: Now comparing each CSV entry against this index. ---")
+
+            for row in csv_list:
+                csv_name_key = normalize_key_name(row.get('name', ''))
+                k = (csv_name_key, row.get('dob', ''))
+                self.log(f"Checking CSV Key: {k}")
+
+                if k in cand_index:
+                    matched.append(cand_index[k])
+                    self.log(f"  -> MATCH FOUND!")
+                    self.log(f"  -> PDF Index Value: {cand_index[k]}")
+                else:
+                    missing_csv.append(row)
+                    self.log("  -> !! MATCH NOT FOUND in PDF index. !!")
+
+            self.log(f"\nMatched {len(matched)} candidates")
+
+            if missing_csv:
+                self.log(f"CSV candidates not found in candidate list: {len(missing_csv)}. Opening manual entry...")
+                # MODIFIED: Pass pdf_text to the next step
+                self.root.after(0, lambda: self._show_manual_csv_entry(missing_csv, matched, centres, exam_month,
+                                                                       exam_year, exam_type, pdf_text))
+                return
+            else:
+                self._continue_with_centres(matched, centres, exam_month, exam_year, exam_type)
+
+        except Exception as e:
+            self.log(f"ERROR in continue processing: {e}")
+            self.root.after(0, self._reset_ui)
+
+    def _show_manual_csv_entry(self, missing_csv, matched, centres, exam_month, exam_year, exam_type, pdf_text):
+        # MODIFIED: Pass pdf_text to the dialog
+        dlg = ManualCSVEntry(self.root, missing_csv, pdf_text)
+        extra = dlg.show()
+        if extra:
+            self.log(f"Added {len(extra)} candidates from CSV manual entry")
+            matched.extend(extra)
+
+        t = threading.Thread(
+            target=lambda: self._continue_with_centres(matched, centres, exam_month, exam_year, exam_type))
+        t.daemon = True
+        t.start()
+
+    def _continue_with_centres(self, matched, centres, exam_month, exam_year, exam_type):
+        try:
+            needed_centres = {c['centre_num'] for c in matched if c.get('centre_num')}
+            missing_codes = sorted([c for c in needed_centres if c not in centres])
+
+            if missing_codes:
+                self.log(f"Missing {len(missing_codes)} centre code(s). Opening manual centre entry...")
+                self.root.after(0, lambda: self._show_manual_centre_entry(missing_codes, centres, matched, exam_month,
+                                                                          exam_year, exam_type))
+                return
+            else:
+                self._continue_with_timetable(matched, centres, exam_month, exam_year, exam_type)
+
+        except Exception as e:
+            self.log(f"ERROR in centre processing: {e}")
+            self.root.after(0, self._reset_ui)
+
+    def _show_manual_centre_entry(self, missing_codes, centres, matched, exam_month, exam_year, exam_type):
+        dlg = ManualCentreEntry(self.root, missing_codes)
+        added = dlg.show()
+        if added:
+            centres.update(added)
+            self.log(f"Added {len(added)} centre mappings")
+
+        t = threading.Thread(
+            target=lambda: self._continue_with_timetable(matched, centres, exam_month, exam_year, exam_type))
+        t.daemon = True
+        t.start()
+
+    def _continue_with_timetable(self, matched, centres, exam_month, exam_year, exam_type):
+        try:
+            subject_universe = set()
+            for c in matched:
+                for s in c.get('subjects', []):
+                    subject_universe.add(s['code'])
+            subject_universe = {s for s in subject_universe if s}
+
+            if ASK_TIMETABLE_EVERY_RUN and subject_universe:
+                self.log(f"Collecting timetable for {len(subject_universe)} unique subject(s)...")
+                self.root.after(0, lambda: self._show_manual_timetable_entry(subject_universe, matched, centres,
+                                                                             exam_month, exam_year, exam_type))
+                return
+            else:
+                self._generate_slips(matched, centres, {}, exam_month, exam_year, exam_type)
+
+        except Exception as e:
+            self.log(f"ERROR in timetable processing: {e}")
+            self.root.after(0, self._reset_ui)
+
+    def _show_manual_timetable_entry(self, subject_universe, matched, centres, exam_month, exam_year, exam_type):
+        dlg = ManualTimetableEntry(self.root, subject_universe, exam_month, exam_year)
+        tt = dlg.show()
+        if tt:
+            self.timetable_cache.update(tt)
+            self.log(f"Added timetable for {len(tt)} subjects")
+
+        t = threading.Thread(
+            target=lambda: self._generate_slips(matched, centres, self.timetable_cache, exam_month, exam_year,
+                                                exam_type))
+        t.daemon = True
+        t.start()
+
+    def _generate_slips(self, matched, centres, timetable, exam_month, exam_year, exam_type):
+        try:
+            self.log("Status: Generating PDF slips...")
+            total_candidates = len(matched)
+            self.progress_bar["maximum"] = total_candidates
+            success_count = 0
+
+            for i, c in enumerate(matched):
+                self.progress_bar["value"] = i + 1
+
+                centre_name = centres.get(c.get('centre_num', ''), '')
+
+                try:
+                    out = create_pdf_slip(c, centre_name, timetable, self.output_dir, exam_month, exam_year, exam_type)
+                    if out:
+                        self.log(f"Generated: {os.path.basename(out)}")
+                        success_count += 1
+                    else:
+                        self.log(f"Failed to generate slip for {c.get('name', 'Unknown')}")
+                except Exception as e:
+                    self.log(f"Failed to generate slip for {c.get('name', 'Unknown')}: {e}")
+
+            duration = time.time() - (self._start_time or time.time())
+            final_message = f"Complete! {success_count}/{total_candidates} slips generated in {duration:.2f}s."
+            self.log(final_message)
+            self.status_label.config(text=f"Status: {final_message}")
+
+            messagebox.showinfo("Success",
+                                f"Processing complete.\n{success_count} of {total_candidates} e-slips were generated.")
+
+        except Exception as e:
+            self.log(f"ERROR in slip generation: {e}")
+            messagebox.showerror("Error", f"An error occurred during slip generation: {e}")
+        finally:
+            self.root.after(0, self._reset_ui)
+
+    def _reset_ui(self):
+        self.btn_start.config(state=tk.NORMAL)
+        self.progress_bar["value"] = 0
+
+
+# ---------------- MAIN ----------------
+if __name__ == "__main__":
+    root = tk.Tk()
+    root.title("CXC E-Slip Generator")
+    style = ttk.Style(root)
+    try:
+        style.theme_use('clam')
+    except Exception:
+        pass
+    app = ESlipGeneratorApp(root)
+    root.mainloop()
+
