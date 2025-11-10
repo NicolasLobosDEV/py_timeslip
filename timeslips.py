@@ -136,11 +136,21 @@ NAME_PATTERN = re.compile(r"^[A-Z'\- ]+,\s*[A-Z'\- ]+(?:\s+[A-Z'\- ]+)*$")
 
 
 # ---------------- CSV PARSER ----------------
-def parse_csv(csv_path, exam_type, log_callback):
+def parse_csv(csv_path, exam_type, exam_month, log_callback):
     eligible = []
     try:
         with open(csv_path, newline='', encoding="utf-8") as f:
             reader = csv.DictReader(f)
+            headers = reader.fieldnames
+
+            # Find the full name header for CSEC January
+            full_name_header = None
+            if exam_type.upper() == "CSEC" and exam_month == "January":
+                for header in headers:
+                    if "FULL NAME" in header.upper():
+                        full_name_header = header
+                        break
+
             for row in reader:
                 service = row.get("Additional Application Service - sent via email", "").strip()
                 if service not in [
@@ -149,16 +159,23 @@ def parse_csv(csv_path, exam_type, log_callback):
                 ]:
                     continue
 
-                if "Choose Examination" in row and row["Choose Examination"].strip():
-                    if row["Choose Examination"].strip().upper() != exam_type.upper():
-                        continue
+                if exam_type.upper() == "CSEC" and exam_month == "January" and full_name_header:
+                    name = row.get(full_name_header, "").strip().title()
+                else:
+                    if "Choose Examination" in row and row["Choose Examination"].strip():
+                        if row["Choose Examination"].strip().upper() != exam_type.upper():
+                            continue
 
-                last = (row.get("Last Name", "")).strip()
-                first = (row.get("First Name", "")).strip()
-                middle = (row.get("Middle Name", "")).strip()
-                name = normalize_name_csv(last, first, middle)
+                    last = (row.get("Last Name", "")).strip()
+                    first = (row.get("First Name", "")).strip()
+                    middle = (row.get("Middle Name", "")).strip()
+                    name = normalize_name_csv(last, first, middle)
 
-                dob = normalize_dob(row.get("Date Of Birth", ""))
+                dob_header = "Date of Birth"
+                if exam_type.upper() == "CSEC" and exam_month == "January":
+                    dob_header = "Date of Birth"  # Assuming header is "Date of Birth" in new format as well
+
+                dob = normalize_dob(row.get(dob_header, ""))
                 if not dob:
                     log_callback(f"CSV row missing/invalid DOB for {name}; skipping")
                     continue
@@ -894,7 +911,7 @@ def create_pdf_slip(candidate, centre_name, timetable, output_dir, exam_month, e
             "Candidate Surname": surname, "Candidate First/Other Names": other_names,
             "Candidate DOB": candidate['dob'], "Candidate Gender": candidate['gender'],
             "Candidate Number": candidate['id'], "Centre Number": candidate['centre_num'],
-            "Centre Location": centre_name or 'N/A'
+            "Centre Location": centre_name or 'Not available'
         }
         pdf.set_fill_color(220, 220, 220)
         for label, value in credentials.items():
@@ -984,9 +1001,13 @@ class ESlipGeneratorApp:
         exam_fr = ttk.LabelFrame(wrap, text="1. Exam Settings", padding=10)
         exam_fr.pack(fill="x")
         ttk.Label(exam_fr, text="Exam Type:").grid(row=0, column=0, sticky="w")
-        ttk.OptionMenu(exam_fr, self.exam_type, self.exam_type.get(), "CSEC", "CAPE").grid(row=0, column=1, sticky="w")
+        exam_type_menu = ttk.OptionMenu(exam_fr, self.exam_type, self.exam_type.get(), "CSEC", "CAPE", command=self._update_month_options)
+        exam_type_menu.grid(row=0, column=1, sticky="w")
+
         ttk.Label(exam_fr, text="Month:").grid(row=0, column=2, sticky="e")
-        ttk.Entry(exam_fr, textvariable=self.exam_month, width=10).grid(row=0, column=3, sticky="w")
+        self.month_combobox = ttk.Combobox(exam_fr, textvariable=self.exam_month, width=10, state="readonly")
+        self.month_combobox.grid(row=0, column=3, sticky="w")
+
         ttk.Label(exam_fr, text="Year:").grid(row=0, column=4, sticky="e")
         ttk.Entry(exam_fr, textvariable=self.exam_year, width=8).grid(row=0, column=5, sticky="w")
         exam_fr.grid_columnconfigure(6, weight=1)
@@ -994,8 +1015,15 @@ class ESlipGeneratorApp:
         files_fr = ttk.LabelFrame(wrap, text="2. Select Source Files", padding=10)
         files_fr.pack(fill="x", pady=(10, 0))
         self._add_file_row(files_fr, 0, "Candidate List (PDF):", "candidates", [("PDF files", "*.pdf")])
-        self._add_file_row(files_fr, 1, "Centre List (PDF):", "centres", [("PDF files", "*.pdf")])
-        self._add_file_row(files_fr, 2, "Eligibility CSV:", "csv", [("CSV files", "*.csv")])
+
+        self.centre_list_available = tk.BooleanVar(value=True)
+        self.centre_list_checkbox = ttk.Checkbutton(files_fr, text="Centre List Available?", variable=self.centre_list_available, command=self._toggle_centre_list)
+        self.centre_list_checkbox.grid(row=1, column=0, sticky='w', pady=5)
+
+        self.centre_list_row = self._add_file_row(files_fr, 2, "Centre List (PDF):", "centres", [("PDF files", "*.pdf")])
+        self._add_file_row(files_fr, 3, "Eligibility CSV:", "csv", [("CSV files", "*.csv")])
+
+        self._update_month_options()
 
         out_fr = ttk.LabelFrame(wrap, text="3. Output", padding=10)
         out_fr.pack(fill="x", pady=(10, 0))
@@ -1032,12 +1060,31 @@ class ESlipGeneratorApp:
         self.timetable_cache = {}
 
     def _add_file_row(self, parent, row, label, key, ftypes):
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w")
+        label_widget = ttk.Label(parent, text=label)
+        label_widget.grid(row=row, column=0, sticky="w")
+
         lbl = ttk.Label(parent, text="No file selected", relief="sunken")
         lbl.grid(row=row, column=1, sticky="ew", padx=6)
-        ttk.Button(parent, text="Browse", command=lambda k=key, l=lbl, ft=ftypes: self._pick_file(k, l, ft)).grid(
-            row=row, column=2)
+
+        button = ttk.Button(parent, text="Browse", command=lambda k=key, l=lbl, ft=ftypes: self._pick_file(k, l, ft))
+        button.grid(row=row, column=2)
+
         parent.grid_columnconfigure(1, weight=1)
+        return (label_widget, lbl, button)
+
+    def _toggle_centre_list(self):
+        state = "normal" if self.centre_list_available.get() else "disabled"
+        for widget in self.centre_list_row:
+            widget.configure(state=state)
+
+    def _update_month_options(self, *args):
+        exam_type = self.exam_type.get()
+        if exam_type == "CSEC":
+            self.month_combobox['values'] = ("January", "May - June")
+            self.exam_month.set("January")
+        elif exam_type == "CAPE":
+            self.month_combobox['values'] = ("May - June",)
+            self.exam_month.set("May - June")
 
     def _pick_file(self, key, label_widget, ftypes):
         p = filedialog.askopenfilename(filetypes=ftypes)
@@ -1065,9 +1112,19 @@ class ESlipGeneratorApp:
         self.root.after(120, self._drain_log)
 
     def start(self):
-        if not all(self.file_paths.values()) or not self.output_dir:
-            messagebox.showerror("Missing Files/Folder", "Please select all source files and an output folder.")
+        required_files = ["candidates", "csv"]
+        if self.centre_list_available.get():
+            required_files.append("centres")
+
+        for file_key in required_files:
+            if not self.file_paths.get(file_key):
+                messagebox.showerror("Missing Files/Folder", "Please select all required source files and an output folder.")
+                return
+
+        if not self.output_dir:
+            messagebox.showerror("Missing Files/Folder", "Please select an output folder.")
             return
+
         if not self.exam_month.get().strip() or not self.exam_year.get().strip():
             messagebox.showerror("Missing Exam Details", "Please enter exam month and year.")
             return
@@ -1088,16 +1145,20 @@ class ESlipGeneratorApp:
             exam_year = self.exam_year.get().strip()
 
             self.log("Status: Parsing CSV for eligible candidates...")
-            csv_list = parse_csv(self.file_paths["csv"], exam_type, self.log)
+            csv_list = parse_csv(self.file_paths["csv"], exam_type, exam_month, self.log)
             if not csv_list:
                 self.log("No eligible candidates found in CSV. Stopping.")
                 return
 
-            self.log("Status: Parsing Centre List...")
-            centres = parse_centre_list(self.file_paths["centres"], self.log, self.output_dir)
-            if not centres:
-                self.log("No centres found. Stopping.")
-                return
+            centres = {}
+            if self.centre_list_available.get():
+                self.log("Status: Parsing Centre List...")
+                centres = parse_centre_list(self.file_paths["centres"], self.log, self.output_dir)
+                if not centres:
+                    self.log("No centres found. Stopping.")
+                    return
+            else:
+                self.log("Skipping centre list parsing as per user selection.")
 
             self.log("Status: Parsing Candidate List...")
             # MODIFIED: Capture the full PDF text
@@ -1200,6 +1261,10 @@ class ESlipGeneratorApp:
 
     def _continue_with_centres(self, matched, centres, exam_month, exam_year, exam_type):
         try:
+            if not self.centre_list_available.get():
+                self._continue_with_timetable(matched, centres, exam_month, exam_year, exam_type)
+                return
+
             needed_centres = {c['centre_num'] for c in matched if c.get('centre_num')}
             missing_codes = sorted([c for c in needed_centres if c not in centres])
 
