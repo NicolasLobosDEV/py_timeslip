@@ -135,56 +135,157 @@ CANDIDATE_NUM_PATTERN = re.compile(r"\b(\d{10})\b")
 NAME_PATTERN = re.compile(r"^[A-Z'\- ]+,\s*[A-Z'\- ]+(?:\s+[A-Z'\- ]+)*$")
 
 
-# ---------------- CSV PARSER ----------------
+# ---------------- CSV PARSER (ROUTER) ----------------
 def parse_csv(csv_path, exam_type, exam_month, log_callback):
+    """
+    Router function to select the correct CSV parser based on exam type and month.
+    """
+    if exam_type == "CSEC" and exam_month == "January":
+        log_callback("Using CSEC January CSV parser.")
+        return parse_csv_january(csv_path, log_callback)
+    else:
+        log_callback("Using standard May/June CSV parser.")
+        return parse_csv_may_june(csv_path, exam_type, log_callback)
+
+
+def parse_csv_may_june(csv_path, exam_type, log_callback):
+    """
+    Original CSV parser, now used for May/June exams.
+    """
     eligible = []
     try:
         with open(csv_path, newline='', encoding="utf-8") as f:
             reader = csv.DictReader(f)
-            headers = reader.fieldnames
+            log_callback(f"DEBUG: Reading {csv_path} for May/June...")
+            log_callback(f"DEBUG: Headers found: {reader.fieldnames}")
 
-            # Find the full name header for CSEC January
-            full_name_header = None
-            if exam_type.upper() == "CSEC" and exam_month == "January":
-                for header in headers:
-                    if "FULL NAME" in header.upper():
-                        full_name_header = header
-                        break
-
+            row_count = 0
             for row in reader:
+                row_count += 1
                 service = row.get("Additional Application Service - sent via email", "").strip()
+
+                # --- DEBUG LOG ---
+                log_callback(f"--- Processing Row {row_count} ---")
+                log_callback(f"DEBUG: Found Service: '{service}'")
+
                 if service not in [
                     "E-candidate slip/Timetable only- $30",
                     "Error recognition & E-candidate slip/Timetable- $50"
                 ]:
+                    # --- DEBUG LOG ---
+                    log_callback("DEBUG: SKIPPING -> Service not eligible.")
                     continue
 
-                if exam_type.upper() == "CSEC" and exam_month == "January" and full_name_header:
-                    name = row.get(full_name_header, "").strip().title()
-                else:
-                    if "Choose Examination" in row and row["Choose Examination"].strip():
-                        if row["Choose Examination"].strip().upper() != exam_type.upper():
-                            continue
+                if "Choose Examination" in row and row["Choose Examination"].strip():
+                    exam_in_csv = row["Choose Examination"].strip().upper()
+                    log_callback(f"DEBUG: Found Exam in CSV: '{exam_in_csv}'")
+                    if exam_in_csv != exam_type.upper():
+                        # --- DEBUG LOG ---
+                        log_callback(f"DEBUG: SKIPPING -> Exam mismatch (App: {exam_type.upper()}, CSV: {exam_in_csv})")
+                        continue
 
-                    last = (row.get("Last Name", "")).strip()
-                    first = (row.get("First Name", "")).strip()
-                    middle = (row.get("Middle Name", "")).strip()
-                    name = normalize_name_csv(last, first, middle)
+                last = (row.get("Last Name", "")).strip()
+                first = (row.get("First Name", "")).strip()
+                middle = (row.get("Middle Name", "")).strip()
+                name = normalize_name_csv(last, first, middle)
 
-                dob_header = "Date of Birth"
-                if exam_type.upper() == "CSEC" and exam_month == "January":
-                    dob_header = "Date of Birth"  # Assuming header is "Date of Birth" in new format as well
+                dob = normalize_dob(row.get("Date Of Birth", ""))
+                if not dob:
+                    log_callback(f"CSV row missing/invalid DOB for {name}; skipping")
+                    continue
+
+                # --- DEBUG LOG ---
+                log_callback(f"DEBUG: SUCCESS -> Added candidate {name}")
+                eligible.append({"name": name, "dob": dob, "raw": row})
+        log_callback(f"CSV: {len(eligible)} candidate(s) eligible for e-slips after filtering.")
+        return eligible
+    except Exception as e:
+        log_callback(f"ERROR parsing May/June CSV: {e}")
+        return []
+
+
+def parse_csv_january(csv_path, log_callback):
+    """
+    New CSV parser for CSEC January exams.
+    Uses "Full Name..." column and "Application Processing Type..." column.
+    Does NOT filter on "Choose Examination".
+    """
+    eligible = []
+    # Find the correct header names from the CSV
+    name_col = "Full Name - name of candidate participating in CSEC January 2026 examination."
+    service_col = "Application Processing Type - sent via email"
+    dob_col = "Date of Birth"
+
+    try:
+        with open(csv_path, newline='', encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+
+            # --- DEBUG LOG ---
+            log_callback(f"DEBUG: Reading {csv_path} for January...")
+            log_callback(f"DEBUG: Headers found: {reader.fieldnames}")
+
+            # Check if headers exist
+            if not reader.fieldnames:
+                log_callback("ERROR: CSV file is empty or unreadable.")
+                return []
+
+            found_headers = {
+                "name": any(name_col in h for h in reader.fieldnames),
+                "service": any(service_col in h for h in reader.fieldnames),
+                "dob": any(dob_col in h for h in reader.fieldnames)
+            }
+
+            # Dynamically find the full column names
+            try:
+                name_header = next(h for h in reader.fieldnames if name_col in h)
+                log_callback(f"DEBUG: Found Name Header: '{name_header}'")  # --- DEBUG LOG ---
+                service_header = next(h for h in reader.fieldnames if service_col in h)
+                log_callback(f"DEBUG: Found Service Header: '{service_header}'")  # --- DEBUG LOG ---
+                dob_header = next(h for h in reader.fieldnames if dob_col in h)
+                log_callback(f"DEBUG: Found DOB Header: '{dob_header}'")  # --- DEBUG LOG ---
+            except StopIteration:
+                log_callback("ERROR: CSEC January CSV is missing required columns.")
+                log_callback(f"  Missing Name Col ('{name_col}'): {not found_headers['name']}")  # More specific log
+                log_callback(
+                    f"  Missing Service Col ('{service_col}'): {not found_headers['service']}")  # More specific log
+                log_callback(f"  Missing DOB Col ('{dob_col}'): {not found_headers['dob']}")  # More specific log
+                return []
+
+            row_count = 0  # --- DEBUG LOG ---
+            for row in reader:
+                row_count += 1  # --- DEBUG LOG ---
+                service = row.get(service_header, "").strip()
+
+                # --- DEBUG LOG ---
+                log_callback(f"--- Processing Row {row_count} ---")
+                log_callback(f"DEBUG: Found Service: '{service}'")
+
+                # --- FIX 1: Added all valid service strings ---
+                eligible_services = [
+                    "Generate E-candidate slip/Timetable only- $30",
+                    "Error recognition & E-candidate slip/Timetable- $50",
+                    "E-candidate slip/Timetable only- $30",
+                    "Error correction & E-candidate slip/Timetable- $50"  # Added this from your log
+                ]
+
+                if service not in eligible_services:
+                    log_callback("DEBUG: SKIPPING -> Service not eligible.")  # --- DEBUG LOG ---
+                    continue
+
+                full_name_str = row.get(name_header, "").strip()
+                name = normalize_name_from_full(full_name_str)
 
                 dob = normalize_dob(row.get(dob_header, ""))
                 if not dob:
                     log_callback(f"CSV row missing/invalid DOB for {name}; skipping")
                     continue
 
+                log_callback(f"DEBUG: SUCCESS -> Added candidate {name}")  # --- DEBUG LOG ---
                 eligible.append({"name": name, "dob": dob, "raw": row})
         log_callback(f"CSV: {len(eligible)} candidate(s) eligible for e-slips after filtering.")
         return eligible
     except Exception as e:
-        log_callback(f"ERROR parsing CSV: {e}")
+        log_callback(f"ERROR parsing CSEC January CSV: {e}")
         return []
 
 
@@ -265,6 +366,23 @@ def normalize_name_csv(last, first, middle):
             nm += " " + middle
         parts.append(nm)
     return ", ".join(parts).title()
+
+
+def normalize_name_from_full(full_name_str):
+    """
+    Parses a single "First Middle Last" string into "Last, First Middle" format.
+    e.g., "KYLE ROMAN BEHARRY" -> "Beharry, Kyle Roman"
+    e.g., "ABIELLE GLENELLA THERESE LEZAMA" -> "Lezama, Abielle Glenella Therese"
+    """
+    parts = full_name_str.strip().upper().split()
+    if not parts:
+        return ""
+
+    last = parts[-1]
+    first = parts[0] if len(parts) > 1 else ""
+    middle = " ".join(parts[1:-1])
+
+    return normalize_name_csv(last, first, middle)  # Re-use existing formatter
 
 
 def normalize_key_name(name_str):
@@ -856,6 +974,7 @@ class PDF(FPDF):
     def footer(self):
         self.set_y(-15)
 
+
 def create_pdf_slip(candidate, centre_name, timetable, output_dir, exam_month, exam_year, exam_type):
     try:
         name_parts = candidate['name'].split(',', 1)
@@ -890,7 +1009,7 @@ def create_pdf_slip(candidate, centre_name, timetable, output_dir, exam_month, e
         pdf.add_page()
         pdf.set_right_margin(15)
         pdf.set_left_margin(15)
-        pdf.set_auto_page_break(True,30)
+        pdf.set_auto_page_break(True, 30)
 
         pdf.set_font('Roboto', '', 11)
         greeting_text = (
@@ -911,7 +1030,7 @@ def create_pdf_slip(candidate, centre_name, timetable, output_dir, exam_month, e
             "Candidate Surname": surname, "Candidate First/Other Names": other_names,
             "Candidate DOB": candidate['dob'], "Candidate Gender": candidate['gender'],
             "Candidate Number": candidate['id'], "Centre Number": candidate['centre_num'],
-            "Centre Location": centre_name or 'Not available'
+            "Centre Location": centre_name or 'N/A'  # Handle empty centre name gracefully
         }
         pdf.set_fill_color(220, 220, 220)
         for label, value in credentials.items():
@@ -984,15 +1103,20 @@ def create_pdf_slip(candidate, centre_name, timetable, output_dir, exam_month, e
 class ESlipGeneratorApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("CXC E-Slip Generator")
+        self.root.title("CXC E-Slip Generator V2")
         self.root.geometry("800x700")
 
         self.log_queue = queue.Queue()
         self.file_paths = {"candidates": "", "centres": "", "csv": ""}
+        self.centre_file_widgets = []  # To toggle disabled/normal state
         self.output_dir = ""
         self.exam_type = tk.StringVar(value="CSEC")
-        self.exam_month = tk.StringVar(value="June")
+
+        self.month_options = ["January", "May - June"]
+        self.exam_month = tk.StringVar(value="May - June")  # Default
         self.exam_year = tk.StringVar(value=str(datetime.now().year))
+        self.centre_list_available = tk.BooleanVar(value=True)
+
         self._start_time = None
 
         wrap = ttk.Frame(root, padding=12)
@@ -1000,30 +1124,36 @@ class ESlipGeneratorApp:
 
         exam_fr = ttk.LabelFrame(wrap, text="1. Exam Settings", padding=10)
         exam_fr.pack(fill="x")
+
         ttk.Label(exam_fr, text="Exam Type:").grid(row=0, column=0, sticky="w")
-        exam_type_menu = ttk.OptionMenu(exam_fr, self.exam_type, self.exam_type.get(), "CSEC", "CAPE", command=self._update_month_options)
-        exam_type_menu.grid(row=0, column=1, sticky="w")
+        self.exam_type_menu = ttk.OptionMenu(exam_fr, self.exam_type, self.exam_type.get(), "CSEC", "CAPE",
+                                             command=self._update_month_options)
+        self.exam_type_menu.grid(row=0, column=1, sticky="w")
 
-        ttk.Label(exam_fr, text="Month:").grid(row=0, column=2, sticky="e")
-        self.month_combobox = ttk.Combobox(exam_fr, textvariable=self.exam_month, width=10, state="readonly")
-        self.month_combobox.grid(row=0, column=3, sticky="w")
+        ttk.Label(exam_fr, text="Month:").grid(row=0, column=2, sticky="e", padx=(10, 0))
+        self.month_menu = ttk.Combobox(exam_fr, textvariable=self.exam_month, width=12, state="readonly")
+        self.month_menu.grid(row=0, column=3, sticky="w")
 
-        ttk.Label(exam_fr, text="Year:").grid(row=0, column=4, sticky="e")
+        ttk.Label(exam_fr, text="Year:").grid(row=0, column=4, sticky="e", padx=(10, 0))
         ttk.Entry(exam_fr, textvariable=self.exam_year, width=8).grid(row=0, column=5, sticky="w")
         exam_fr.grid_columnconfigure(6, weight=1)
 
         files_fr = ttk.LabelFrame(wrap, text="2. Select Source Files", padding=10)
         files_fr.pack(fill="x", pady=(10, 0))
+
         self._add_file_row(files_fr, 0, "Candidate List (PDF):", "candidates", [("PDF files", "*.pdf")])
 
-        self.centre_list_available = tk.BooleanVar(value=True)
-        self.centre_list_checkbox = ttk.Checkbutton(files_fr, text="Centre List Available?", variable=self.centre_list_available, command=self._toggle_centre_list)
-        self.centre_list_checkbox.grid(row=1, column=0, sticky='w', pady=5)
+        # Add Centre List row and store widgets
+        self.centre_file_widgets = self._add_file_row(files_fr, 1, "Centre List (PDF):", "centres",
+                                                      [("PDF files", "*.pdf")])
 
-        self.centre_list_row = self._add_file_row(files_fr, 2, "Centre List (PDF):", "centres", [("PDF files", "*.pdf")])
-        self._add_file_row(files_fr, 3, "Eligibility CSV:", "csv", [("CSV files", "*.csv")])
+        # Add Checkbox for Centre List
+        self.centre_list_checkbox = ttk.Checkbutton(files_fr, text="Centre List Available?",
+                                                    variable=self.centre_list_available,
+                                                    command=self._toggle_centre_list_input)
+        self.centre_list_checkbox.grid(row=1, column=3, sticky="w", padx=(10, 0))
 
-        self._update_month_options()
+        self._add_file_row(files_fr, 2, "Eligibility CSV:", "csv", [("CSV files", "*.csv")])
 
         out_fr = ttk.LabelFrame(wrap, text="3. Output", padding=10)
         out_fr.pack(fill="x", pady=(10, 0))
@@ -1059,32 +1189,47 @@ class ESlipGeneratorApp:
         self.root.after(100, self._drain_log)
         self.timetable_cache = {}
 
-    def _add_file_row(self, parent, row, label, key, ftypes):
-        label_widget = ttk.Label(parent, text=label)
-        label_widget.grid(row=row, column=0, sticky="w")
-
-        lbl = ttk.Label(parent, text="No file selected", relief="sunken")
-        lbl.grid(row=row, column=1, sticky="ew", padx=6)
-
-        button = ttk.Button(parent, text="Browse", command=lambda k=key, l=lbl, ft=ftypes: self._pick_file(k, l, ft))
-        button.grid(row=row, column=2)
-
-        parent.grid_columnconfigure(1, weight=1)
-        return (label_widget, lbl, button)
-
-    def _toggle_centre_list(self):
-        state = "normal" if self.centre_list_available.get() else "disabled"
-        for widget in self.centre_list_row:
-            widget.configure(state=state)
+        # Initialize UI states
+        self._update_month_options()
+        self._toggle_centre_list_input()
 
     def _update_month_options(self, *args):
+        """Called when the Exam Type dropdown changes."""
         exam_type = self.exam_type.get()
-        if exam_type == "CSEC":
-            self.month_combobox['values'] = ("January", "May - June")
-            self.exam_month.set("January")
-        elif exam_type == "CAPE":
-            self.month_combobox['values'] = ("May - June",)
+        if exam_type == "CAPE":
+            self.month_menu['values'] = ["May - June"]
             self.exam_month.set("May - June")
+        elif exam_type == "CSEC":
+            self.month_menu['values'] = self.month_options  # ["January", "May - June"]
+
+    def _toggle_centre_list_input(self, *args):
+        """Called when the 'Centre List Available?' checkbox is toggled."""
+        state = "normal" if self.centre_list_available.get() else "disabled"
+        for widget in self.centre_file_widgets:
+            widget.config(state=state)
+
+        # Also clear the file path if disabled
+        if not self.centre_list_available.get():
+            self.file_paths["centres"] = ""
+            # Find the label widget (it's the second one) and update its text
+            if len(self.centre_file_widgets) > 1:
+                self.centre_file_widgets[1].config(text="No file selected")
+
+    def _add_file_row(self, parent, row, label, key, ftypes):
+        lbl_widget = ttk.Label(parent, text=label)
+        lbl_widget.grid(row=row, column=0, sticky="w")
+
+        path_lbl = ttk.Label(parent, text="No file selected", relief="sunken")
+        path_lbl.grid(row=row, column=1, sticky="ew", padx=6)
+
+        btn_widget = ttk.Button(parent, text="Browse",
+                                command=lambda k=key, l=path_lbl, ft=ftypes: self._pick_file(k, l, ft))
+        btn_widget.grid(row=row, column=2)
+
+        parent.grid_columnconfigure(1, weight=1)
+
+        # Return the widgets so they can be enabled/disabled
+        return [lbl_widget, path_lbl, btn_widget]
 
     def _pick_file(self, key, label_widget, ftypes):
         p = filedialog.askopenfilename(filetypes=ftypes)
@@ -1112,17 +1257,18 @@ class ESlipGeneratorApp:
         self.root.after(120, self._drain_log)
 
     def start(self):
+        # --- NEW VALIDATION LOGIC ---
         required_files = ["candidates", "csv"]
         if self.centre_list_available.get():
             required_files.append("centres")
 
-        for file_key in required_files:
-            if not self.file_paths.get(file_key):
-                messagebox.showerror("Missing Files/Folder", "Please select all required source files and an output folder.")
-                return
+        missing = [key for key in required_files if not self.file_paths[key]]
 
-        if not self.output_dir:
-            messagebox.showerror("Missing Files/Folder", "Please select an output folder.")
+        if missing or not self.output_dir:
+            msg = "Please select all required source files and an output folder.\n"
+            if missing:
+                msg += f"Missing files: {', '.join(missing)}"
+            messagebox.showerror("Missing Files/Folder", msg)
             return
 
         if not self.exam_month.get().strip() or not self.exam_year.get().strip():
@@ -1145,11 +1291,13 @@ class ESlipGeneratorApp:
             exam_year = self.exam_year.get().strip()
 
             self.log("Status: Parsing CSV for eligible candidates...")
+            # --- MODIFIED: Pass exam_type and exam_month to parser ---
             csv_list = parse_csv(self.file_paths["csv"], exam_type, exam_month, self.log)
             if not csv_list:
                 self.log("No eligible candidates found in CSV. Stopping.")
                 return
 
+            # --- MODIFIED: Conditionally parse centre list ---
             centres = {}
             if self.centre_list_available.get():
                 self.log("Status: Parsing Centre List...")
@@ -1158,7 +1306,7 @@ class ESlipGeneratorApp:
                     self.log("No centres found. Stopping.")
                     return
             else:
-                self.log("Skipping centre list parsing as per user selection.")
+                self.log("Status: Skipping Centre List (not available).")
 
             self.log("Status: Parsing Candidate List...")
             # MODIFIED: Capture the full PDF text
@@ -1260,25 +1408,29 @@ class ESlipGeneratorApp:
         t.start()
 
     def _continue_with_centres(self, matched, centres, exam_month, exam_year, exam_type):
-        try:
-            if not self.centre_list_available.get():
-                self._continue_with_timetable(matched, centres, exam_month, exam_year, exam_type)
-                return
+        # --- MODIFIED: Conditionally run this entire step ---
+        if self.centre_list_available.get():
+            try:
+                needed_centres = {c['centre_num'] for c in matched if c.get('centre_num')}
+                missing_codes = sorted([c for c in needed_centres if c not in centres])
 
-            needed_centres = {c['centre_num'] for c in matched if c.get('centre_num')}
-            missing_codes = sorted([c for c in needed_centres if c not in centres])
+                if missing_codes:
+                    self.log(f"Missing {len(missing_codes)} centre code(s). Opening manual centre entry...")
+                    self.root.after(0,
+                                    lambda: self._show_manual_centre_entry(missing_codes, centres, matched, exam_month,
+                                                                           exam_year, exam_type))
+                    return
+                else:
+                    self._continue_with_timetable(matched, centres, exam_month, exam_year, exam_type)
 
-            if missing_codes:
-                self.log(f"Missing {len(missing_codes)} centre code(s). Opening manual centre entry...")
-                self.root.after(0, lambda: self._show_manual_centre_entry(missing_codes, centres, matched, exam_month,
-                                                                          exam_year, exam_type))
-                return
-            else:
-                self._continue_with_timetable(matched, centres, exam_month, exam_year, exam_type)
-
-        except Exception as e:
-            self.log(f"ERROR in centre processing: {e}")
-            self.root.after(0, self._reset_ui)
+            except Exception as e:
+                self.log(f"ERROR in centre processing: {e}")
+                self.root.after(0, self._reset_ui)
+        else:
+            # --- NEW: Skip centre check if not available ---
+            self.log("Skipping manual centre entry (not available).")
+            # Pass the empty 'centres' dict straight to the timetable step
+            self._continue_with_timetable(matched, centres, exam_month, exam_year, exam_type)
 
     def _show_manual_centre_entry(self, missing_codes, centres, matched, exam_month, exam_year, exam_type):
         dlg = ManualCentreEntry(self.root, missing_codes)
@@ -1340,6 +1492,7 @@ class ESlipGeneratorApp:
                 try:
                     out = create_pdf_slip(c, centre_name, timetable, self.output_dir, exam_month, exam_year, exam_type)
                     if out:
+                        # --- FIX 2: Changed os.basename to os.path.basename ---
                         self.log(f"Generated: {os.path.basename(out)}")
                         success_count += 1
                     else:
@@ -1377,4 +1530,3 @@ if __name__ == "__main__":
         pass
     app = ESlipGeneratorApp(root)
     root.mainloop()
-
