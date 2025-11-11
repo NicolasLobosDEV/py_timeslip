@@ -137,8 +137,21 @@ NAME_PATTERN = re.compile(r"^[A-Z'\- ]+,\s*[A-Z'\- ]+(?:\s+[A-Z'\- ]+)*$")
 
 # ---------------- CSV PARSER (ROUTER) ----------------
 def parse_csv(csv_path, exam_type, exam_month, log_callback):
-    """
-    Router function to select the correct CSV parser based on exam type and month.
+    """Selects the appropriate CSV parser based on the exam type and month.
+
+    This function acts as a router, directing the CSV parsing to the correct
+    function based on whether the exam is a CSEC January exam or a standard
+    May/June exam.
+
+    Args:
+        csv_path (str): The file path to the CSV file.
+        exam_type (str): The type of exam (e.g., "CSEC", "CAPE").
+        exam_month (str): The month of the exam (e.g., "January", "May - June").
+        log_callback (function): A callback function for logging messages.
+
+    Returns:
+        list: A list of dictionaries, where each dictionary represents an
+              eligible candidate.
     """
     if exam_type == "CSEC" and exam_month == "January":
         log_callback("Using CSEC January CSV parser.")
@@ -149,8 +162,21 @@ def parse_csv(csv_path, exam_type, exam_month, log_callback):
 
 
 def parse_csv_may_june(csv_path, exam_type, log_callback):
-    """
-    Original CSV parser, now used for May/June exams.
+    """Parses a CSV file for May/June CSEC and CAPE exams.
+
+    This function reads a CSV file and extracts a list of candidates who are
+    eligible for e-slips based on the services they have signed up for. It
+    filters candidates by exam type to ensure only relevant candidates are
+    processed.
+
+    Args:
+        csv_path (str): The file path to the CSV file.
+        exam_type (str): The type of exam (e.g., "CSEC", "CAPE") to filter by.
+        log_callback (function): A callback function for logging messages.
+
+    Returns:
+        list: A list of dictionaries, where each dictionary represents an
+              eligible candidate. Returns an empty list if an error occurs.
     """
     eligible = []
     try:
@@ -205,10 +231,20 @@ def parse_csv_may_june(csv_path, exam_type, log_callback):
 
 
 def parse_csv_january(csv_path, log_callback):
-    """
-    New CSV parser for CSEC January exams.
-    Uses "Full Name..." column and "Application Processing Type..." column.
-    Does NOT filter on "Choose Examination".
+    """Parses a CSV file specifically for CSEC January exams.
+
+    This parser is tailored for the format of CSEC January CSV files, which
+    use different column headers for candidate names and services compared to
+    the May/June exams. It extracts a list of eligible candidates based on the
+    services they have signed up for.
+
+    Args:
+        csv_path (str): The file path to the CSV file.
+        log_callback (function): A callback function for logging messages.
+
+    Returns:
+        list: A list of dictionaries, where each dictionary represents an
+              eligible candidate. Returns an empty list if an error occurs.
     """
     eligible = []
     # Find the correct header names from the CSV
@@ -291,8 +327,21 @@ def parse_csv_january(csv_path, log_callback):
 
 # ---------------- PDF TEXT HELPERS ----------------
 def extract_text_from_pdf(pdf_path, log, output_dir):
-    """
-    MODIFIED to always use image-based OCR first for higher accuracy on scanned documents.
+    """Extracts text from a PDF file, prioritizing OCR for accuracy.
+
+    This function processes each page of a PDF file, using image-based OCR
+    (Optical Character Recognition) to extract text. This method is generally
+    more accurate for scanned documents than simple text extraction. The
+    extracted text from all pages is concatenated and returned as a single
+    string.
+
+    Args:
+        pdf_path (str): The file path to the PDF file.
+        log (function): A callback function for logging messages.
+        output_dir (str): The directory to save the OCR output text file.
+
+    Returns:
+        str: The combined, cleaned text extracted from the PDF.
     """
     doc = fitz.open(pdf_path)
     all_text = []
@@ -339,7 +388,19 @@ def extract_text_from_pdf(pdf_path, log, output_dir):
 
 
 def clean_ocr_text(s):
-    """Enhanced OCR text cleaning with common corrections."""
+    """Cleans and corrects common errors in OCR-extracted text.
+
+    This function performs a series of string replacements to fix common
+    misinterpretations that occur during Optical Character Recognition (OCR),
+    such as replacing visually similar characters (e.g., 'O' with '0') and
+    removing unwanted symbols.
+
+    Args:
+        s (str): The input string from OCR extraction.
+
+    Returns:
+        str: The cleaned and corrected string.
+    """
     s = s.replace("\u2010", "-").replace("\u2011", "-").replace("\u2013", "-")
     s = s.replace('|', '').replace(']', '')
 
@@ -351,6 +412,20 @@ def clean_ocr_text(s):
 
 
 def normalize_name_csv(last, first, middle):
+    """Normalizes a candidate's name from separate parts into a standard format.
+
+    This function takes the last, first, and middle names as separate strings,
+    trims whitespace, converts them to a consistent case, and combines them
+    into a single string in the format "Last, First Middle".
+
+    Args:
+        last (str): The candidate's last name.
+        first (str): The candidate's first name.
+        middle (str): The candidate's middle name.
+
+    Returns:
+        str: The normalized full name string.
+    """
     parts = []
     last = last.strip().upper()
     first = first.strip().upper()
@@ -369,10 +444,18 @@ def normalize_name_csv(last, first, middle):
 
 
 def normalize_name_from_full(full_name_str):
-    """
-    Parses a single "First Middle Last" string into "Last, First Middle" format.
-    e.g., "KYLE ROMAN BEHARRY" -> "Beharry, Kyle Roman"
-    e.g., "ABIELLE GLENELLA THERESE LEZAMA" -> "Lezama, Abielle Glenella Therese"
+    """Parses a full name string into the "Last, First Middle" format.
+
+    This function is designed to handle full names provided as a single string
+    (e.g., "First Middle Last") and reformat them into a standardized
+    "Last, First Middle" format.
+
+    Args:
+        full_name_str (str): The full name of the candidate.
+
+    Returns:
+        str: The normalized name string, or an empty string if the input is
+             empty.
     """
     parts = full_name_str.strip().upper().split()
     if not parts:
@@ -386,13 +469,39 @@ def normalize_name_from_full(full_name_str):
 
 
 def normalize_key_name(name_str):
-    """Normalizes a name string for reliable matching by removing spaces, commas and making it lowercase."""
+    """Creates a simplified, consistent key from a name string for matching.
+
+    This function converts a name string into a format that is reliable for
+    comparisons and lookups. It removes all whitespace and commas and converts
+    the string to lowercase to ensure that variations in formatting do not
+    affect matching.
+
+    Args:
+        name_str (str): The name string to normalize.
+
+    Returns:
+        str: The normalized key string, or an empty string if the input is not
+             a string.
+    """
     if not isinstance(name_str, str):
         return ""
     return re.sub(r'[\s,]+', '', name_str).lower()
 
 
 def normalize_dob(val):
+    """Normalizes a date of birth string into a 'dd/mm/yyyy' format.
+
+    This function attempts to parse a date of birth from a string, which may
+    be in one of several common formats (e.g., 'yyyy-mm-dd', 'dd/mm/yyyy',
+    'Month dd, yyyy'). It returns the date formatted as 'dd/mm/yyyy'.
+
+    Args:
+        val (str): The date of birth string.
+
+    Returns:
+        str or None: The normalized date string, or None if the input cannot
+                     be parsed.
+    """
     val = str(val).strip()
     if not val:
         return None
@@ -438,6 +547,22 @@ def normalize_dob(val):
 
 # ---------------- CENTRE LIST PARSER (REVISED) ----------------
 def parse_centre_list(pdf_path, log, output_dir):
+    """Parses a PDF file to extract a list of exam centres.
+
+    This function reads a PDF centre list, extracts the text, and uses regular
+    expressions to identify 6-digit centre codes and their corresponding names.
+    It includes logic to clean up common OCR errors and correctly associate
+    names with codes.
+
+    Args:
+        pdf_path (str): The file path to the centre list PDF.
+        log (function): A callback function for logging messages.
+        output_dir (str): The directory to save the OCR output text file.
+
+    Returns:
+        dict: A dictionary mapping centre codes (str) to centre names (str).
+              Returns an empty dictionary if parsing fails.
+    """
     centres = {}
     log("--- STARTING CENTRE LIST PARSING (IMPROVED LOGIC) ---")
     try:
@@ -501,11 +626,24 @@ def parse_centre_list(pdf_path, log, output_dir):
 
 # ---------------- CANDIDATE LIST PARSER (REVISED) ----------------
 def parse_candidate_list(pdf_path, log, output_dir):
-    """
-    REWRITTEN parser to handle the specific column order:
-    CANDIDATE# | NAME | DOB | GENDER | SUBJECTS
-    And to filter out footer junk text.
-    MODIFIED to also return the full extracted text.
+    """Parses a PDF candidate list to extract detailed candidate information.
+
+    This function reads a PDF file containing a list of candidates and their
+    details, including candidate number, name, date of birth, gender, and
+    enrolled subjects. It uses pattern matching to identify and extract this
+    information for each candidate.
+
+    Args:
+        pdf_path (str): The file path to the candidate list PDF.
+        log (function): A callback function for logging messages.
+        output_dir (str): The directory to save the OCR output text file.
+
+    Returns:
+        tuple: A tuple containing:
+            - list: A list of dictionaries, where each dictionary represents a
+                    candidate.
+            - list: A list of any text blocks that could not be parsed.
+            - str: The full, cleaned text extracted from the PDF.
     """
     candidates = []
     log("--- STARTING CANDIDATE LIST PARSING (Smarter Logic V3) ---")
@@ -590,7 +728,22 @@ def parse_candidate_list(pdf_path, log, output_dir):
 # ---------------- MANUAL WINDOWS ----------------
 # Helper class for scrollable frames
 class ScrollableFrame(ttk.Frame):
+    """A custom tkinter frame that includes a vertical scrollbar.
+
+    This class creates a scrollable container, which is useful for displaying
+    content that may exceed the visible area of a window. It combines a
+    `ttk.Frame` with a `tk.Canvas` and a `ttk.Scrollbar` to achieve the
+    scrolling effect.
+    """
+
     def __init__(self, container, *args, **kwargs):
+        """Initializes the ScrollableFrame.
+
+        Args:
+            container (tk.Widget): The parent widget for this frame.
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+        """
         super().__init__(container, *args, **kwargs)
         canvas = tk.Canvas(self)
         scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
@@ -611,7 +764,22 @@ class ScrollableFrame(ttk.Frame):
 
 
 class BaseManualEntry(tk.Toplevel):
+    """A base class for creating manual data entry dialog windows.
+
+    This class provides the basic structure for a top-level dialog window,
+    including a title, instructions, and Submit/Cancel buttons. It is intended
+    to be subclassed for specific data entry tasks.
+    """
+
     def __init__(self, parent, title, instructions):
+        """Initializes the BaseManualEntry dialog.
+
+        Args:
+            parent (tk.Widget): The parent widget for this dialog.
+            title (str): The title of the dialog window.
+            instructions (str): The instructions to display at the top of the
+                                dialog.
+        """
         super().__init__(parent)
         self.title(title)
         self.geometry("950x600")  # Increased size for tables and new button
@@ -631,16 +799,47 @@ class BaseManualEntry(tk.Toplevel):
         ttk.Button(btns, text="Cancel", command=self.destroy).pack(side="left")
 
     def submit(self):
+        """Handles the submission of the entered data.
+
+        This method is intended to be overridden by subclasses to provide
+        specific logic for processing and saving the data entered in the
+        dialog.
+        """
         raise NotImplementedError
 
     def show(self):
+        """Displays the dialog window and waits for it to be closed.
+
+        This method makes the dialog window visible and waits until the user
+        interacts with it (e.g., by clicking Submit or Cancel).
+
+        Returns:
+            list: The entries collected from the dialog.
+        """
         self.deiconify()
         self.wait_window()
         return self.entries
 
 
 class ManualCandidateEntry(BaseManualEntry):
+    """A dialog for manually entering or correcting candidate information.
+
+    This class provides a user interface for manually adding or editing
+    candidate data that could not be automatically parsed from the PDF. It
+    includes a table for entering candidate details and a button to auto-fill
+    information by searching the PDF text.
+    """
+
     def __init__(self, parent, missed_blocks, pdf_text):
+        """Initializes the ManualCandidateEntry dialog.
+
+        Args:
+            parent (tk.Widget): The parent widget for this dialog.
+            missed_blocks (list): A list of text blocks that could not be
+                                  parsed.
+            pdf_text (str): The full text extracted from the candidate list
+                            PDF.
+        """
         super().__init__(parent, "Manual Candidate Entry",
                          "Review any automatically extracted but unparsable lines below. Add or correct candidate information in the table. Use the 'Find All Details' button to search the PDF and auto-fill details for all rows with a valid Candidate ID.")
 
@@ -678,6 +877,16 @@ class ManualCandidateEntry(BaseManualEntry):
         self._add_row()  # Start with one empty row
 
     def _add_row(self, data=None):
+        """Adds a new row to the candidate entry table.
+
+        This method creates a new set of entry widgets for a single candidate
+        and adds them to the table. It can optionally populate the new row with
+        initial data.
+
+        Args:
+            data (dict, optional): A dictionary containing initial data for the
+                                 new row. Defaults to None.
+        """
         data = data or {}
         row_num = len(self.rows) + 1
 
@@ -704,6 +913,13 @@ class ManualCandidateEntry(BaseManualEntry):
 
     # NEW: Method to find details for all candidates in the table
     def _find_all_details(self):
+        """Finds and auto-fills details for all candidates in the table.
+
+        This method iterates through all rows in the candidate entry table. For
+        each row that has a valid 10-digit candidate ID, it searches the full
+        PDF text for that ID and, if found, extracts and populates the
+        gender and subjects fields.
+        """
         found_count = 0
         not_found_ids = []
 
@@ -766,6 +982,13 @@ class ManualCandidateEntry(BaseManualEntry):
         messagebox.showinfo("Find Complete", summary_message, parent=self)
 
     def submit(self):
+        """Processes and validates the manually entered candidate data.
+
+        This method is called when the user clicks the "Submit" button. It
+        iterates through each row in the table, validates the entered data
+        (e.g., candidate ID format, DOB format), and compiles a list of valid
+        candidate dictionaries.
+        """
         out = []
         has_blank_id_with_data = False
 
@@ -828,7 +1051,23 @@ class ManualCandidateEntry(BaseManualEntry):
 
 
 class ManualCSVEntry(ManualCandidateEntry):
+    """A dialog for matching unmatched CSV candidates with PDF data.
+
+    This class provides a user interface for resolving candidates who were
+    present in the eligibility CSV but not found in the candidate list PDF.
+    It pre-populates the entry table with the names and DOBs from the CSV,
+    allowing the user to manually enter the correct 10-digit candidate ID.
+    """
+
     def __init__(self, parent, unmatched_csv, pdf_text):
+        """Initializes the ManualCSVEntry dialog.
+
+        Args:
+            parent (tk.Widget): The parent widget for this dialog.
+            unmatched_csv (list): A list of candidate dictionaries from the CSV
+                                  that were not found in the PDF.
+            pdf_text (str): The full text extracted from the candidate list PDF.
+        """
         # MODIFIED: Pass pdf_text to the parent class
         super().__init__(parent, [], pdf_text)
         self.title("Manual CSV Candidate Entry")
@@ -850,7 +1089,21 @@ class ManualCSVEntry(ManualCandidateEntry):
 
 
 class ManualCentreEntry(BaseManualEntry):
+    """A dialog for manually entering the names of missing exam centres.
+
+    This class provides a user interface for the user to input the names for
+    any centre codes that were found in the candidate list but not in the
+    centre list PDF.
+    """
+
     def __init__(self, parent, missing_centre_codes):
+        """Initializes the ManualCentreEntry dialog.
+
+        Args:
+            parent (tk.Widget): The parent widget for this dialog.
+            missing_centre_codes (list): A list of centre codes for which the
+                                         names are missing.
+        """
         super().__init__(parent, "Manual Centre Entry",
                          "Enter the name for each missing centre code. Rows with empty codes or names will be ignored.")
         self.centre_entries = {}
@@ -872,6 +1125,12 @@ class ManualCentreEntry(BaseManualEntry):
             self.centre_entries[code] = name_var
 
     def submit(self):
+        """Processes and saves the manually entered centre names.
+
+        This method is called when the user clicks the "Submit" button. It
+        collects the entered names for each centre code and stores them in a
+        dictionary.
+        """
         centres = {}
         for code, name_var in self.centre_entries.items():
             name = name_var.get().strip()
@@ -882,7 +1141,23 @@ class ManualCentreEntry(BaseManualEntry):
 
 
 class ManualTimetableEntry(BaseManualEntry):
+    """A dialog for manually entering exam timetable information.
+
+    This class provides a user interface for entering the date, time, and
+    paper number for each subject in the exam. This information is used to
+    populate the timetable section of the e-slips.
+    """
+
     def __init__(self, parent, unique_subjects, exam_month, exam_year):
+        """Initializes the ManualTimetableEntry dialog.
+
+        Args:
+            parent (tk.Widget): The parent widget for this dialog.
+            unique_subjects (list): A list of unique subject codes that require
+                                    timetable information.
+            exam_month (str): The month of the exam.
+            exam_year (str): The year of the exam.
+        """
         super().__init__(parent, "Manual Timetable Entry",
                          "Enter timetable information for each paper of a subject. Use the 'Add Paper' button if a subject has more than three papers.")
         self.subject_rows = {}
@@ -915,6 +1190,17 @@ class ManualTimetableEntry(BaseManualEntry):
             add_button.grid(row=len(self.subject_rows[s_code]) + 1, column=0, columnspan=3, pady=5)
 
     def _add_paper_row(self, subject_code, container, paper_num=None):
+        """Adds a new row for a single paper to the timetable entry table.
+
+        This method creates the entry widgets for a single paper (paper number,
+        date, and session) and adds them to the appropriate subject's frame.
+
+        Args:
+            subject_code (str): The subject code for which to add a paper.
+            container (tk.Widget): The parent widget for the new row.
+            paper_num (str, optional): The default paper number to display.
+                                     Defaults to None.
+        """
         row_index = len(self.subject_rows[subject_code]) + 1
 
         paper_var = tk.StringVar(value=str(paper_num) if paper_num else str(row_index))
@@ -929,6 +1215,12 @@ class ManualTimetableEntry(BaseManualEntry):
         self.subject_rows[subject_code].append((paper_var, date_var, period_var))
 
     def submit(self):
+        """Processes and saves the manually entered timetable information.
+
+        This method is called when the user clicks the "Submit" button. It
+        collects the entered timetable data for each subject and stores it in a
+        dictionary.
+        """
         timetable = {}
         for subject_code, rows in self.subject_rows.items():
             timetable[subject_code] = []
@@ -946,11 +1238,28 @@ class ManualTimetableEntry(BaseManualEntry):
 
 # --- PDF GENERATION CLASS ---
 class PDF(FPDF):
+    """A customized PDF class for generating e-slips with a background image.
+
+    This class extends the `FPDF` library to include a background image on each
+    page and to define a custom header and footer for the e-slips.
+    """
+
     def __init__(self, background_path="background.png"):
+        """Initializes the PDF object.
+
+        Args:
+            background_path (str, optional): The file path to the background
+                                             image. Defaults to "background.png".
+        """
         super().__init__()
         self.background_path = background_path
 
     def add_page(self, orientation='', format='', same=False):
+        """Adds a new page to the PDF and applies the background image.
+
+        Overrides the default `add_page` method to include the functionality
+        of adding a background image to each new page.
+        """
         super().add_page(orientation, format, same)
         if self.background_path and os.path.exists(self.background_path):
             self.image(self.background_path, x=0, y=0, w=self.w, h=self.h)
@@ -963,6 +1272,11 @@ class PDF(FPDF):
                 self.cell(0, 5, "background.png not found", 0, align='C')
 
     def header(self):
+        """Defines the header section of the PDF page.
+
+        This method is automatically called by `FPDF` when a new page is
+        created. It sets the font and adds the main title to the e-slip.
+        """
         try:
             self.set_font('Roboto', 'B', 14)
         except RuntimeError:
@@ -972,10 +1286,35 @@ class PDF(FPDF):
         self.ln(5)
 
     def footer(self):
+        """Defines the footer section of the PDF page.
+
+        This method is automatically called by `FPDF` and is used to position
+        the page content from the bottom of the page.
+        """
         self.set_y(-15)
 
 
 def create_pdf_slip(candidate, centre_name, timetable, output_dir, exam_month, exam_year, exam_type):
+    """Generates a single PDF e-slip for a given candidate.
+
+    This function takes all the necessary information for a single candidate and
+    creates a formatted PDF e-slip. The e-slip includes the candidate's
+    credentials, exam details, and a personalized timetable.
+
+    Args:
+        candidate (dict): A dictionary containing the candidate's information.
+        centre_name (str): The name of the exam centre.
+        timetable (dict): A dictionary containing the timetable information for
+                        all subjects.
+        output_dir (str): The directory where the generated PDF will be saved.
+        exam_month (str): The month of the exam.
+        exam_year (str): The year of the exam.
+        exam_type (str): The type of exam (e.g., "CSEC", "CAPE").
+
+    Returns:
+        str or bool: The file path of the generated PDF if successful,
+                     otherwise False.
+    """
     try:
         name_parts = candidate['name'].split(',', 1)
         surname = name_parts[0].strip() if name_parts else "Unknown"
@@ -1101,7 +1440,19 @@ def create_pdf_slip(candidate, centre_name, timetable, output_dir, exam_month, e
 
 # ---------------- APP ----------------
 class ESlipGeneratorApp:
+    """The main application class for the CXC E-Slip Generator.
+
+    This class builds and manages the main graphical user interface (GUI) of the
+    application. It handles user interactions, file selections, and orchestrates
+    the entire process of parsing data and generating e-slips.
+    """
+
     def __init__(self, root):
+        """Initializes the ESlipGeneratorApp.
+
+        Args:
+            root (tk.Tk): The root tkinter window for the application.
+        """
         self.root = root
         self.root.title("CXC E-Slip Generator V2")
         self.root.geometry("800x700")
@@ -1194,7 +1545,12 @@ class ESlipGeneratorApp:
         self._toggle_centre_list_input()
 
     def _update_month_options(self, *args):
-        """Called when the Exam Type dropdown changes."""
+        """Updates the available exam months based on the selected exam type.
+
+        This method is triggered when the user changes the "Exam Type" dropdown.
+        It restricts the month options to "May - June" for CAPE exams, while
+        allowing both "January" and "May - June" for CSEC exams.
+        """
         exam_type = self.exam_type.get()
         if exam_type == "CAPE":
             self.month_menu['values'] = ["May - June"]
@@ -1203,7 +1559,12 @@ class ESlipGeneratorApp:
             self.month_menu['values'] = self.month_options  # ["January", "May - June"]
 
     def _toggle_centre_list_input(self, *args):
-        """Called when the 'Centre List Available?' checkbox is toggled."""
+        """Enables or disables the centre list file input widgets.
+
+        This method is connected to the "Centre List Available?" checkbox. It
+        toggles the state of the file selection widgets for the centre list
+        based on whether the checkbox is checked or not.
+        """
         state = "normal" if self.centre_list_available.get() else "disabled"
         for widget in self.centre_file_widgets:
             widget.config(state=state)
@@ -1216,6 +1577,22 @@ class ESlipGeneratorApp:
                 self.centre_file_widgets[1].config(text="No file selected")
 
     def _add_file_row(self, parent, row, label, key, ftypes):
+        """Creates a row of widgets for selecting a file.
+
+        This helper method abstracts the creation of a labeled file selection
+        row, which includes a label, a display for the selected file path, and a
+        "Browse" button.
+
+        Args:
+            parent (tk.Widget): The parent widget for the new row.
+            row (int): The grid row number to place the widgets in.
+            label (str): The text label for the file input.
+            key (str): The key to use for storing the file path.
+            ftypes (list): A list of file type tuples for the file dialog.
+
+        Returns:
+            list: A list of the created widgets.
+        """
         lbl_widget = ttk.Label(parent, text=label)
         lbl_widget.grid(row=row, column=0, sticky="w")
 
@@ -1232,21 +1609,55 @@ class ESlipGeneratorApp:
         return [lbl_widget, path_lbl, btn_widget]
 
     def _pick_file(self, key, label_widget, ftypes):
+        """Opens a file dialog and updates the corresponding path.
+
+        This method is called when the user clicks a "Browse" button. It opens
+        a file dialog, and if a file is selected, it updates the internal
+        `file_paths` dictionary and the label widget that displays the file
+        name.
+
+        Args:
+            key (str): The key corresponding to the file type being selected.
+            label_widget (tk.Widget): The label widget to update with the file
+                                    name.
+            ftypes (list): A list of file type tuples for the file dialog.
+        """
         p = filedialog.askopenfilename(filetypes=ftypes)
         if p:
             self.file_paths[key] = p
             label_widget.config(text=os.path.basename(p))
 
     def select_output_dir(self):
+        """Opens a directory dialog for selecting the output folder.
+
+        This method is called when the user clicks the "Choose Folder" button.
+        It opens a directory selection dialog and, if a directory is chosen,
+        updates the output directory path and the corresponding label.
+        """
         p = filedialog.askdirectory()
         if p:
             self.output_dir = p
             self.out_lbl.config(text=p)
 
     def log(self, msg):
+        """Adds a message to the log queue to be displayed in the GUI.
+
+        This method provides a thread-safe way to log messages from different
+        parts of the application. Messages are added to a queue and then
+        processed by the `_drain_log` method in the main GUI thread.
+
+        Args:
+            msg (str): The message to be logged.
+        """
         self.log_queue.put(msg)
 
     def _drain_log(self):
+        """Periodically checks the log queue and updates the log widget.
+
+        This method is called repeatedly by the tkinter main loop to process
+        any messages that have been added to the log queue. It updates the
+        log text widget with new messages.
+        """
         while not self.log_queue.empty():
             try:
                 msg = self.log_queue.get_nowait()
@@ -1257,6 +1668,13 @@ class ESlipGeneratorApp:
         self.root.after(120, self._drain_log)
 
     def start(self):
+        """Starts the e-slip generation process.
+
+        This method is called when the "Generate E-Slips" button is clicked. It
+        performs initial validation to ensure that all required files and the
+        output directory have been selected. If validation passes, it starts a
+        new thread to run the main processing logic.
+        """
         # --- NEW VALIDATION LOGIC ---
         required_files = ["candidates", "csv"]
         if self.centre_list_available.get():
@@ -1285,6 +1703,12 @@ class ESlipGeneratorApp:
         t.start()
 
     def _run(self):
+        """The main processing thread for generating e-slips.
+
+        This method orchestrates the entire e-slip generation process, from
+        parsing the input files to generating the final PDF outputs. It is run
+        in a separate thread to keep the GUI responsive during processing.
+        """
         try:
             exam_type = self.exam_type.get().strip()
             exam_month = self.exam_month.get().strip()
@@ -1332,6 +1756,22 @@ class ESlipGeneratorApp:
 
     def _show_manual_candidate_entry(self, unmatched_blocks, cand_list, csv_list, centres, exam_month, exam_year,
                                      exam_type, pdf_text):
+        """Displays the manual candidate entry dialog and handles the results.
+
+        This method is called when there are unparsable blocks of text from the
+        candidate list PDF. It opens a dialog that allows the user to manually
+        enter the details for these candidates.
+
+        Args:
+            unmatched_blocks (list): A list of unparsable text blocks.
+            cand_list (list): The list of successfully parsed candidates.
+            csv_list (list): The list of eligible candidates from the CSV.
+            centres (dict): A dictionary of exam centres.
+            exam_month (str): The month of the exam.
+            exam_year (str): The year of the exam.
+            exam_type (str): The type of the exam.
+            pdf_text (str): The full text from the candidate list PDF.
+        """
         # MODIFIED: Pass pdf_text to the dialog
         dlg = ManualCandidateEntry(self.root, unmatched_blocks, pdf_text)
         extra = dlg.show()
@@ -1346,6 +1786,21 @@ class ESlipGeneratorApp:
         t.start()
 
     def _continue_processing(self, cand_list, csv_list, centres, exam_month, exam_year, exam_type, pdf_text):
+        """Continues the processing after the initial PDF parsing.
+
+        This method is responsible for cross-matching the candidates parsed from
+        the PDF with the eligible candidates from the CSV. It identifies which
+        candidates are matched and which are missing.
+
+        Args:
+            cand_list (list): The list of candidates parsed from the PDF.
+            csv_list (list): The list of eligible candidates from the CSV.
+            centres (dict): A dictionary of exam centres.
+            exam_month (str): The month of the exam.
+            exam_year (str): The year of the exam.
+            exam_type (str): The type of the exam.
+            pdf_text (str): The full text from the candidate list PDF.
+        """
         try:
             self.log("Status: Cross-matching candidates with CSV...")
             matched = []
@@ -1395,6 +1850,22 @@ class ESlipGeneratorApp:
             self.root.after(0, self._reset_ui)
 
     def _show_manual_csv_entry(self, missing_csv, matched, centres, exam_month, exam_year, exam_type, pdf_text):
+        """Displays the manual CSV entry dialog for unmatched candidates.
+
+        This method is called when there are candidates in the CSV file who
+        could not be matched with any candidates from the PDF. It opens a
+        dialog that allows the user to manually enter the candidate IDs for
+        these unmatched candidates.
+
+        Args:
+            missing_csv (list): A list of unmatched candidates from the CSV.
+            matched (list): The list of successfully matched candidates.
+            centres (dict): A dictionary of exam centres.
+            exam_month (str): The month of the exam.
+            exam_year (str): The year of the exam.
+            exam_type (str): The type of the exam.
+            pdf_text (str): The full text from the candidate list PDF.
+        """
         # MODIFIED: Pass pdf_text to the dialog
         dlg = ManualCSVEntry(self.root, missing_csv, pdf_text)
         extra = dlg.show()
@@ -1408,6 +1879,20 @@ class ESlipGeneratorApp:
         t.start()
 
     def _continue_with_centres(self, matched, centres, exam_month, exam_year, exam_type):
+        """Continues the processing after matching candidates, handling centres.
+
+        This method checks for any missing centre names. If the centre list is
+        available, it identifies any centre codes from the matched candidates
+        that do not have a corresponding name in the `centres` dictionary and
+        prompts the user for manual entry if needed.
+
+        Args:
+            matched (list): The list of matched candidates.
+            centres (dict): A dictionary of exam centres.
+            exam_month (str): The month of the exam.
+            exam_year (str): The year of the exam.
+            exam_type (str): The type of the exam.
+        """
         # --- MODIFIED: Conditionally run this entire step ---
         if self.centre_list_available.get():
             try:
@@ -1433,6 +1918,20 @@ class ESlipGeneratorApp:
             self._continue_with_timetable(matched, centres, exam_month, exam_year, exam_type)
 
     def _show_manual_centre_entry(self, missing_codes, centres, matched, exam_month, exam_year, exam_type):
+        """Displays the manual centre entry dialog.
+
+        This method is called when there are missing centre names. It opens a
+        dialog that allows the user to manually enter the names for the missing
+        centre codes.
+
+        Args:
+            missing_codes (list): A list of centre codes without names.
+            centres (dict): The dictionary of existing centre mappings.
+            matched (list): The list of matched candidates.
+            exam_month (str): The month of the exam.
+            exam_year (str): The year of the exam.
+            exam_type (str): The type of the exam.
+        """
         dlg = ManualCentreEntry(self.root, missing_codes)
         added = dlg.show()
         if added:
@@ -1445,6 +1944,19 @@ class ESlipGeneratorApp:
         t.start()
 
     def _continue_with_timetable(self, matched, centres, exam_month, exam_year, exam_type):
+        """Continues the processing after handling centres, moving on to the timetable.
+
+        This method gathers all unique subjects from the list of matched
+        candidates and then prompts the user to enter the timetable information
+        for those subjects.
+
+        Args:
+            matched (list): The list of matched candidates.
+            centres (dict): A dictionary of exam centres.
+            exam_month (str): The month of the exam.
+            exam_year (str): The year of the exam.
+            exam_type (str): The type of the exam.
+        """
         try:
             subject_universe = set()
             for c in matched:
@@ -1465,6 +1977,19 @@ class ESlipGeneratorApp:
             self.root.after(0, self._reset_ui)
 
     def _show_manual_timetable_entry(self, subject_universe, matched, centres, exam_month, exam_year, exam_type):
+        """Displays the manual timetable entry dialog.
+
+        This method opens a dialog that allows the user to enter the timetable
+        details for all the unique subjects found among the matched candidates.
+
+        Args:
+            subject_universe (set): A set of all unique subject codes.
+            matched (list): The list of matched candidates.
+            centres (dict): A dictionary of exam centres.
+            exam_month (str): The month of the exam.
+            exam_year (str): The year of the exam.
+            exam_type (str): The type of the exam.
+        """
         dlg = ManualTimetableEntry(self.root, subject_universe, exam_month, exam_year)
         tt = dlg.show()
         if tt:
@@ -1478,6 +2003,20 @@ class ESlipGeneratorApp:
         t.start()
 
     def _generate_slips(self, matched, centres, timetable, exam_month, exam_year, exam_type):
+        """Generates the final PDF e-slips for all matched candidates.
+
+        This is the final step in the process. It iterates through all the
+        matched candidates and calls the `create_pdf_slip` function to generate
+        a PDF e-slip for each one.
+
+        Args:
+            matched (list): The final list of matched and verified candidates.
+            centres (dict): A dictionary of exam centres.
+            timetable (dict): A dictionary of the exam timetable.
+            exam_month (str): The month of the exam.
+            exam_year (str): The year of the exam.
+            exam_type (str): The type of the exam.
+        """
         try:
             self.log("Status: Generating PDF slips...")
             total_candidates = len(matched)
@@ -1515,6 +2054,12 @@ class ESlipGeneratorApp:
             self.root.after(0, self._reset_ui)
 
     def _reset_ui(self):
+        """Resets the UI to its initial state after processing is complete.
+
+        This method is called at the end of the e-slip generation process,
+        whether it succeeds or fails. It re-enables the "Generate E-Slips"
+        button and resets the progress bar.
+        """
         self.btn_start.config(state=tk.NORMAL)
         self.progress_bar["value"] = 0
 
