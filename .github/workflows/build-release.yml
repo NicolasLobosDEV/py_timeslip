@@ -1,0 +1,70 @@
+# This is the GitHub Action workflow file.
+# Create a folder named ".github" in your repository.
+# Inside that, create a folder named "workflows".
+# Place this file inside the "workflows" folder.
+
+name: Build Windows EXE
+
+on:
+  # 1. Allows you to manually run this action from the "Actions" tab on GitHub
+  workflow_dispatch:
+  
+  # 2. Automatically runs this action whenever you "publish" a new "Release"
+  release:
+    types: [created]
+
+jobs:
+  build-windows-exe:
+    # This job must run on a Windows machine
+    runs-on: windows-latest
+
+    steps:
+      # Step 1: Check out your repository's code
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # Step 2: Set up the Python environment
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11' # You can change this to your preferred Python version
+
+      # Step 3: Install the Python libraries listed in your requirements.txt
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      # Step 4: Run the PyInstaller command to build the .exe
+      # This is the same command from our previous conversation.
+      # It bundles the fonts and background image.
+      # Note: We use `^` for line breaks in Windows shell.
+      - name: Build the .exe with PyInstaller
+        run: |
+          pyinstaller --onefile --noconsole ^
+          --add-data "Roboto-Regular.ttf;." ^
+          --add-data "Roboto-Bold.ttf;." ^
+          --add-data "Roboto-Italic.ttf;." ^
+          --add-data "background.png;." ^
+          timeslips.py
+
+      # Step 5 (Manual): If you ran this manually, upload the .exe as an "artifact"
+      - name: Upload .exe as Artifact (for manual runs)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cxc-eslip-generator-exe
+          path: ./dist/timeslips.exe # The .exe is created in the 'dist' folder
+
+      # Step 6 (Automatic): If this was triggered by a new release,
+      # this uploads the .exe directly to that release page for easy download.
+      - name: Upload .exe to Release
+        if: github.event_name == 'release'
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: ./dist/timeslips.exe
+          asset_name: timeslips.exe
+          asset_content_type: application/vnd.microsoft.portable-executable
