@@ -41,11 +41,11 @@ jobs:
       # Note: We use `^` for line breaks in Windows shell.
       - name: Build the .exe with PyInstaller
         run: |
-          pyinstaller --onefile --noconsole ^
-          --add-data "Roboto-Regular.ttf;." ^
-          --add-data "Roboto-Bold.ttf;." ^
-          --add-data "Roboto-Italic.ttf;." ^
-          --add-data "background.png;." ^
+          pyinstaller --onefile --noconsole `
+          --add-data "Roboto-Regular.ttf;." `
+          --add-data "Roboto-Bold.ttf;." `
+          --add-data "Roboto-Italic.ttf;." `
+          --add-data "background.png;." `
           timeslips.py
 
       # Step 5 (Manual): If you ran this manually, upload the .exe as an "artifact"
