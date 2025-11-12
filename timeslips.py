@@ -1,6 +1,6 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-import fitz  # PyMuPDF
+import pymupdf  # PyMuPDF
 from fpdf import FPDF
 from fpdf.enums import XPos, YPos
 import re
@@ -343,7 +343,7 @@ def extract_text_from_pdf(pdf_path, log, output_dir):
     Returns:
         str: The combined, cleaned text extracted from the PDF.
     """
-    doc = fitz.open(pdf_path)
+    doc = pymupdf.open(pdf_path)
     all_text = []
     page_count = len(doc)
     pages_to_process = page_count if not DEBUG else 1
