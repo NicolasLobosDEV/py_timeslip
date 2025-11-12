@@ -47,7 +47,7 @@ jobs:
       # Note: We use `^` for line breaks in Windows shell.
       - name: Build the .exe with PyInstaller
         run: |
-          pyinstaller --onefile timeslips.spec
+          pyinstaller timeslips.spec
 
       # Step 5 (Manual): If you ran this manually, upload the .exe as an "artifact"
       - name: Upload .exe as Artifact (for manual runs)
