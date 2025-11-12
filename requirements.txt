@@ -2,3 +2,4 @@ fitz==0.0.1.dev2
 fpdf2==2.8.4
 Pillow==12.0.0
 pytesseract==0.3.13
+pyinstaller==6.16.0
