@@ -50,8 +50,7 @@ jobs:
           pyinstaller timeslips.spec
 
       # Step 5 (Manual): If you ran this manually, upload the .exe as an "artifact"
-      - name: Upload .exe as Artifact (for manual runs)
-        if: github.event_name == 'workflow_dispatch'
+      - name: Upload .exe as Artifact
         uses: actions/upload-artifact@v4
         with:
           name: cxc-eslip-generator-exe
